@@ -1,0 +1,14 @@
+# build artifacts
+build/
+third_party/
+*.o
+*.so
+!docs/**/*.so
+
+# konfigurasi lokal
+mcggmod.conf
+
+# editor
+.vscode/
+.idea/
+*.swp

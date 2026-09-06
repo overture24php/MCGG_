@@ -1,0 +1,54 @@
+name: build
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  arm64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ambil frida-gum devkit (android-arm64)
+        run: |
+          set -euxo pipefail
+          VER="16.5.9"
+          URL="https://github.com/frida/frida/releases/download/${VER}/frida-gum-devkit-${VER}-android-arm64.tar.xz"
+          mkdir -p third_party/frida-gum
+          curl -fL --retry 3 -o gum.tar.xz "$URL"
+          tar -xJf gum.tar.xz -C third_party/frida-gum
+          ls -la third_party/frida-gum
+
+      - name: Konfigurasi CMake (NDK bawaan runner)
+        run: |
+          set -euxo pipefail
+          echo "NDK di: $ANDROID_NDK_LATEST_HOME"
+          cmake -B build \
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_LATEST_HOME/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-24 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -GNinja
+
+      - name: Build
+        run: cmake --build build -j"$(nproc)"
+
+      - name: Info hasil
+        run: |
+          set -euxo pipefail
+          ls -la build/libmcggmod.so
+          "$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" \
+            -h -d build/libmcggmod.so | head -40
+
+      - name: Salin sebagai .sh (pola libTool)
+        run: cp build/libmcggmod.so build/mcggmod_inject.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: libmcggmod-arm64
+          path: |
+            build/libmcggmod.so
+            build/mcggmod_inject.sh
+          if-no-files-found: error
