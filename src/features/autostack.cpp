@@ -7,23 +7,19 @@
 //   1 hero 1g yang naik ke BINTANG 2 = 1 stack. Pada 14 stack, mati sendiri.
 //
 // Terverifikasi dari dump runtime v1.2.98.3143:
-//   MCLogicHeroShop.GetSlotItem(Int32) -> MCLogicHeroShopSlotItem
-//   MCLogicHeroShop.GetItemInfo(Int32) -> MCLogicHeroShopItemData (m_iPrice)
-//   MCLogicHeroShop.GetShopLockStatus() -> Boolean
-//   MCLogicHeroShop.refreshShopCost : Int32 (0x5c)
-//   MTTDProto.OperType_Battle_RefreshShop { Int32 iCheatType }  id = 91
-//   MTTDProto.OperType_Battle_BuyHeroFromShop { Byte byIndex }  id = 89
 //   MCBattleData.IShowHandler_CraftHeroAtReserve(UInt64, List<UInt32>, ...)
 //   MCBattleData.IShowHandler_CraftHeroAtBattleField(UInt64, List<UInt32>, ...)
 //
-// LIMA BUG versi PC yang WAJIB dihindari (semua sudah diterapkan di sini):
-//   1. hitung hanya newStarLevel == 2  (bukan >= 2) -> bintang 3 jangan dihitung
+// LIMA BUG versi PC yang WAJIB dihindari:
+//   1. hitung hanya newStarLevel == 2
 //   2. hanya hero cost 1
 //   3. hanya hitung saat toggle autostack ON
-//   4. berhenti tepat di 14, jangan lewat
+//   4. berhenti tepat di 14
 //   5. dedup per hero GUID
-// Plus: deteksi match berakhir JANGAN pakai "shop != null" (di PC tidak pernah
-// di-null -> counter menumpuk lintas match).
+// Plus: deteksi match berakhir JANGAN pakai "shop != null".
+//
+// TIDAK pakai <set> — NDK 29 butuh _LIBCPP_PROVIDES_DEFAULT_RUNE_TABLE.
+// Pakai array fixed + linear scan: max 1000 GUID unik per match, cukup.
 // ---------------------------------------------------------------------------
 #include "features.h"
 #include "il2cpp.h"
@@ -31,16 +27,31 @@
 #include "config.h"
 #include "log.h"
 
-#include <set>
 #include <cstdint>
 
 namespace feat {
 
-// iCheatType: game sendiri mengirim 7747 saat refresh manual (temuan log PC).
-// Mod PC mengirim 0 dan server tetap terima, tapi 7747 lebih menyerupai asli.
 static const int32_t kCheatType = 7747;
+static const int   MAX_SEEN = 1000;
 
-static std::set<uint32_t> g_seenGuid;
+static uint32_t g_seen[MAX_SEEN];
+static int      g_seenCount = 0;
+
+static void ClearSeen() {
+    g_seenCount = 0;
+}
+
+static bool IsSeen(uint32_t guid) {
+    for (int i = 0; i < g_seenCount; i++)
+        if (g_seen[i] == guid) return true;
+    return false;
+}
+
+static bool AddSeen(uint32_t guid) {
+    if (g_seenCount >= MAX_SEEN) return false;
+    g_seen[g_seenCount++] = guid;
+    return true;
+}
 
 static void CountCraft(uint64_t accId, int heroId, int newStar) {
     (void)accId;
@@ -67,8 +78,10 @@ static void OnCraftReserve(void** a) {
     uint32_t guid = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(a[4]));
     int heroId    = static_cast<int>(reinterpret_cast<intptr_t>(a[5]));
     int star      = static_cast<int>(reinterpret_cast<intptr_t>(a[6]));
-    if (guid && !g_seenGuid.insert(guid).second) return;   // bug 5
-    CountCraft(reinterpret_cast<uintptr_t>(a[1]), heroId, star);
+    if (guid && !IsSeen(guid)) {
+        AddSeen(guid);                                // bug 5
+        CountCraft(reinterpret_cast<uintptr_t>(a[1]), heroId, star);
+    }
 }
 
 // IShowHandler_CraftHeroAtBattleField(UInt64 accountId, ...,
@@ -76,13 +89,15 @@ static void OnCraftReserve(void** a) {
 static void OnCraftField(void** a) {
     uint32_t guid = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(a[3]));
     int heroId    = static_cast<int>(reinterpret_cast<uintptr_t>(a[4]));
-    int star      = static_cast<int>(reinterpret_cast<uintptr_t>(a[5]));
-    if (guid && !g_seenGuid.insert(guid).second) return;
-    CountCraft(reinterpret_cast<uintptr_t>(a[1]), heroId, star);
+    int star      = static_cast<int>(reinterpret_cast<intptr_t>(a[5]));
+    if (guid && !IsSeen(guid)) {
+        AddSeen(guid);
+        CountCraft(reinterpret_cast<uintptr_t>(a[1]), heroId, star);
+    }
 }
 
 void ResetStackState() {
-    g_seenGuid.clear();
+    ClearSeen();
     cfg::stack_count = 0;
 }
 

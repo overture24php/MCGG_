@@ -34,13 +34,15 @@
 #include "config.h"
 #include "log.h"
 
+// TIDAK pakai <vector> — NDK 29 butuh _LIBCPP_PROVIDES_DEFAULT_RUNE_TABLE
+// Pakai array fixed-size saja, cukup untuk 5 slot shop.
 #include <cstdint>
-#include <vector>
 #include <algorithm>
 
 namespace feat {
 
 static const int32_t kOperBuyHeroFromShop = 89;
+static const int MAX_SLOTS = 5;
 
 static size_t off_price     = 0;   // MCLogicHeroShopItemData.m_iPrice
 static size_t off_slotHero  = 0;   // MCLogicHeroShopSlotItem.m_iHeroOrItemId
@@ -62,10 +64,6 @@ static int PriceOfSlot(void* shop, uint8_t s, int* heroIdOut) {
     if (hid <= 0) return -1;
     *heroIdOut = hid;
 
-    // GetItemInfo mengembalikan STRUCT by value -> di arm64 struct kecil
-    // dikembalikan lewat register, jadi tidak bisa dibaca sebagai pointer.
-    // Aman: ambil harga dari field data slot kalau tersedia, kalau tidak
-    // pakai -1 dan biarkan pemanggil melewati slot itu.
     if (!fn_getItemInfo || off_price == 0) return -1;
     void* info = reinterpret_cast<void* (*)(void*, int)>(fn_getItemInfo)(shop, s);
     if (!info) return -1;
@@ -86,7 +84,19 @@ static bool SendBuy(uint8_t slot) {
     return true;
 }
 
-// dipanggil dari hook Refresh, HANYA saat isAutoRefresh == true
+// Sort sederhana: insertion sort, 5 elemen saja
+static void SortByPrice(SlotInfo* arr, int n) {
+    for (int i = 1; i < n; i++) {
+        SlotInfo key = arr[i];
+        int j = i - 1;
+        while (j >= 0 && arr[j].price > key.price) {
+            arr[j + 1] = arr[j];
+            j--;
+        }
+        arr[j + 1] = key;
+    }
+}
+
 static void DoPreClear(void* shop) {
     if (!shop) return;
 
@@ -96,48 +106,54 @@ static void DoPreClear(void* shop) {
         return;
     }
 
-    std::vector<SlotInfo> slots;
-    for (uint8_t s = 0; s <= 4; s++) {
+    SlotInfo slots[MAX_SLOTS];
+    int n = 0;
+    for (uint8_t s = 0; s < MAX_SLOTS; s++) {
         int hid = 0;
         int price = PriceOfSlot(shop, s, &hid);
-        if (price > 0) slots.push_back({s, hid, price});
+        if (price > 0) {
+            slots[n].slot = s;
+            slots[n].heroId = hid;
+            slots[n].price = price;
+            n++;
+        }
     }
-    if (slots.size() < 2) return;   // butuh >=2: satu dibuang, satu disisakan
+    if (n < 2) return;
 
+    // cari harga tertinggi
     int keep = 0;
-    for (auto& s : slots) keep = std::max(keep, s.price);
+    for (int i = 0; i < n; i++) if (slots[i].price > keep) keep = slots[i].price;
 
-    std::vector<SlotInfo> targets;
-    for (auto& s : slots) if (s.price < keep) targets.push_back(s);
-    if (targets.empty()) {
+    // kumpulkan yang murah
+    SlotInfo targets[MAX_SLOTS];
+    int tn = 0;
+    for (int i = 0; i < n; i++) if (slots[i].price < keep) targets[tn++] = slots[i];
+
+    if (tn == 0) {
         LOGI("[SCAV] semua slot harga sama (%d), tidak ada yang dibersihkan", keep);
         return;
     }
-    // termurah dulu: kalau gold habis, yang paling murah sudah hilang
-    std::sort(targets.begin(), targets.end(),
-              [](const SlotInfo& a, const SlotInfo& b) { return a.price < b.price; });
 
-    LOGI("[SCAV] mulai: sisakan cost %d, target %zu slot murah",
-         keep, targets.size());
+    // termurah dulu
+    SortByPrice(targets, tn);
+
+    LOGI("[SCAV] mulai: sisakan cost %d, target %d slot murah", keep, tn);
 
     int sent = 0;
-    for (auto& t : targets) {
-        // (b) batas pakai `sent` SAJA
-        if (sent >= static_cast<int>(targets.size())) break;
+    for (int i = 0; i < tn; i++) {
+        if (sent >= tn) break;   // (b) batas pakai sent SAJA
 
-        // (d) verifikasi ulang: slot bisa berubah isi
         int hid = 0;
-        int now = PriceOfSlot(shop, t.slot, &hid);
+        int now = PriceOfSlot(shop, targets[i].slot, &hid);  // (d) verifikasi ulang
         if (now < 0) continue;
-        if (now >= keep) continue;      // sudah jadi hero mahal, jangan disentuh
+        if (now >= keep) continue;
 
-        if (SendBuy(t.slot)) {
+        if (SendBuy(targets[i].slot)) {
             sent++;
-            LOGI("[SCAV] beli S%u hero=%d (%dg)", t.slot, hid, now);
+            LOGI("[SCAV] beli S%d hero=%d (%dg)", targets[i].slot, hid, now);
         }
     }
-    LOGI("[SCAV] selesai: %d/%zu slot murah dibeli, sisa cost %d",
-         sent, targets.size(), keep);
+    LOGI("[SCAV] selesai: %d/%d slot murah dibeli, sisa cost %d", sent, tn, keep);
 }
 
 // Refresh(ShopRefreshCostType type, Boolean isAutoRefresh, Int32 cost, Int32 lv)
