@@ -32,6 +32,10 @@ target_link_libraries(mcggmod
 )
 
 # -O2 + strip: kecilkan ukuran, hilangkan simbol yang tidak perlu diekspor
+# NDK 29 + libc++: header <locale> (di-include oleh <vector>/<set>) butuh
+# _LIBCPP_PROVIDES_DEFAULT_RUNE_TABLE, kalau tidak -> "unknown rune table"
+target_compile_definitions(mcggmod PRIVATE _LIBCPP_PROVIDES_DEFAULT_RUNE_TABLE)
+
 target_compile_options(mcggmod PRIVATE
     -O2
     -fvisibility=hidden
