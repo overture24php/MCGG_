@@ -71,16 +71,40 @@ static bool LocateCsImage() {
     return false;
 }
 
+// Cari library il2cpp. Nama bisa berbeda antar game/build:
+//   - libil2cpp.so (standar Unity)
+//   - liblogic.so (beberapa build Moonton)
+//   - libgame.so (beberapa embed langsung)
+//   - libmoba.so (MLBB mobile)
+// Polling semua nama sampai ketemu.
+static const char* kLibNames[] = {
+    "libil2cpp.so",
+    "liblogic.so",
+    "libgame.so",
+    "libmoba.so",
+    "libunity.so",
+};
+
+static bool TryLoadLib() {
+    for (const char* name : kLibNames) {
+        g_handle = dlopen(name, RTLD_NOLOAD | RTLD_NOW);
+        if (!g_handle) g_handle = dlopen(name, RTLD_NOW);
+        if (g_handle) {
+            LOGI("il2cpp lib termuat: %s", name);
+            return true;
+        }
+    }
+    return false;
+}
+
 bool Wait(int timeout_ms) {
     const int step = 250;
     int waited = 0;
 
     for (;;) {
         if (!g_handle) {
-            g_handle = dlopen("libil2cpp.so", RTLD_NOLOAD | RTLD_NOW);
-            if (!g_handle) g_handle = dlopen("libil2cpp.so", RTLD_NOW);
-            if (g_handle) LOGI("libil2cpp.so termuat");
-            else LOGW("libil2cpp.so BELUM termuat (waited %d ms)", waited);
+            if (!TryLoadLib())
+                LOGW("il2cpp lib BELUM termuat (waited %d ms)", waited);
         }
 
         if (g_handle && !api.domain_get) {
