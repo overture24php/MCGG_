@@ -1,9 +1,10 @@
 // memory.cpp - Memory utilities for game modification
 
 #include "memory.h"
+#include <cstdio>
+#include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
-#include <string.h>
 #include <android/log.h>
 
 #define LOG_TAG "MCGG_Memory"
