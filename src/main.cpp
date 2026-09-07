@@ -19,6 +19,7 @@
 #include <jni.h>
 #include <pthread.h>
 #include <unistd.h>
+#include <ctime>
 
 namespace feat {
 void TriggerAutoWin();      // autowin.cpp
@@ -31,14 +32,27 @@ void InitAll() {
 }
 } // namespace feat
 
+static void WriteStatus(const char* step) {
+    FILE* f = std::fopen("/sdcard/mcggmod_status.txt", "w");
+    if (f) {
+        std::fprintf(f, "step: %s\n", step);
+        std::fprintf(f, "time: %ld\n", (long)time(nullptr));
+        std::fclose(f);
+    }
+}
+
 static void* MainThread(void*) {
     LOGI("=== MCGG mod start (arm64) ===");
+    WriteStatus("start");
 
     // 1. tunggu il2cpp + metadata benar-benar siap (packer)
+    WriteStatus("waiting_for_il2cpp");
     if (!il2::Wait(120000)) {
         LOGE("il2cpp tidak siap, mod berhenti");
+        WriteStatus("FAILED_il2cpp_not_ready");
         return nullptr;
     }
+    WriteStatus("il2cpp_ready");
 
     // 2. attach thread ini ke domain sebelum menyentuh objek managed
     il2::ScopedThread st;

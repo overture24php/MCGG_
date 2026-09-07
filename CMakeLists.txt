@@ -13,10 +13,12 @@ add_library(mcggmod SHARED
     src/hook.cpp
     src/config.cpp
     src/status.cpp
+    src/menu.cpp
     src/features/autowin.cpp
     src/features/autostack.cpp
     src/features/preclear.cpp
     src/features/freebuy.cpp
+    ${IMGUI_SOURCES}
 )
 
 target_include_directories(mcggmod PRIVATE

@@ -1,0 +1,71 @@
+name: Build MCGG Mod Menu
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Setup Android NDK
+      uses: nttld/setup-ndk@v1
+      with:
+        ndk-version: r25c
+    
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y cmake make git
+    
+    - name: Download ImGui
+      run: |
+        mkdir -p include/imgui/backends
+        git clone --depth 1 https://github.com/ocornut/imgui.git /tmp/imgui
+        cp /tmp/imgui/*.cpp include/imgui/
+        cp /tmp/imgui/*.h include/imgui/
+        cp /tmp/imgui/backends/imgui_impl_android.cpp include/imgui/backends/
+        cp /tmp/imgui/backends/imgui_impl_android.h include/imgui/backends/
+        cp /tmp/imgui/backends/imgui_impl_opengl3.cpp include/imgui/backends/
+        cp /tmp/imgui/backends/imgui_impl_opengl3.h include/imgui/backends/
+        cp /tmp/imgui/backends/imgui_impl_opengl3_loader.h include/imgui/backends/
+    
+    - name: Build arm64-v8a
+      run: |
+        mkdir -p build/arm64-v8a
+        cd build/arm64-v8a
+        cmake ../.. \
+          -DCMAKE_TOOLCHAIN_FILE=${{ env.NDK_ROOT }}/build/cmake/android.toolchain.cmake \
+          -DANDROID_ABI=arm64-v8a \
+          -DANDROID_PLATFORM=android-21 \
+          -DCMAKE_BUILD_TYPE=Release
+        make -j$(nproc)
+    
+    - name: Build armeabi-v7a
+      run: |
+        mkdir -p build/armeabi-v7a
+        cd build/armeabi-v7a
+        cmake ../.. \
+          -DCMAKE_TOOLCHAIN_FILE=${{ env.NDK_ROOT }}/build/cmake/android.toolchain.cmake \
+          -DANDROID_ABI=armeabi-v7a \
+          -DANDROID_PLATFORM=android-21 \
+          -DCMAKE_BUILD_TYPE=Release
+        make -j$(nproc)
+    
+    - name: Package
+      run: |
+        mkdir -p output
+        cp build/arm64-v8a/libmcgg_mod_menu.so output/arm64-v8a.so
+        cp build/armeabi-v7a/libmcgg_mod_menu.so output/armeabi-v7a.so
+    
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: mcgg-mod-menu
+        path: output/
