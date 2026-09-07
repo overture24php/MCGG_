@@ -12,6 +12,7 @@ add_library(mcggmod SHARED
     src/il2cpp.cpp
     src/hook.cpp
     src/config.cpp
+    src/status.cpp
     src/features/autowin.cpp
     src/features/autostack.cpp
     src/features/preclear.cpp

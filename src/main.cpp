@@ -13,6 +13,7 @@
 #include "hook.h"
 #include "config.h"
 #include "features.h"
+#include "status.h"
 #include "log.h"
 
 #include <jni.h>
@@ -55,14 +56,22 @@ static void* MainThread(void*) {
     feat::InitAll();
     LOGI("=== semua hook terpasang ===");
 
-    // 6. loop kecil: layani aksi sekali-pakai (autowin trigger)
+    // 6. loop kecil: layani aksi sekali-pakai (autowin trigger) + update status
     bool prev_autowin = false;
+    int  status_tick = 0;
     for (;;) {
         if (cfg::t.autowin && !prev_autowin) {
             feat::TriggerAutoWin();
-            cfg::t.autowin = false;      // sekali tekan, sekali jalan
+            cfg::t.autowin = false;
         }
         prev_autowin = cfg::t.autowin;
+
+        // update status file tiap ~1 detik
+        if (++status_tick >= 2) {
+            status_tick = 0;
+            status::Update();
+        }
+
         usleep(500 * 1000);
     }
     return nullptr;
