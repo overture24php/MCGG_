@@ -13,17 +13,18 @@ add_library(mcggmod SHARED
     src/hook.cpp
     src/config.cpp
     src/status.cpp
-    src/menu.cpp
     src/features/autowin.cpp
     src/features/autostack.cpp
     src/features/preclear.cpp
     src/features/freebuy.cpp
-    ${IMGUI_SOURCES}
 )
 
 target_include_directories(mcggmod PRIVATE
     src
     "${FRIDA_GUM_DIR}"
+    "${CMAKE_SOURCE_DIR}/android-modmenu/include"
+    "${CMAKE_SOURCE_DIR}/android-modmenu/include/imgui"
+    "${CMAKE_SOURCE_DIR}/android-modmenu/include/imgui/backends"
 )
 
 # libfrida-gum.a statis: bawa dependensi sendiri, tidak perlu lib eksternal
