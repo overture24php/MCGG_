@@ -111,29 +111,63 @@ jobs:
         with:
           path: main
 
-      - name: Build Zygisk loader
+      - name: Checkout ImGui
+        uses: actions/checkout@v4
+        with:
+          repository: ocornut/imgui
+          path: imgui
+          ref: v1.91.0
+
+      - name: Siapkan folder android-modmenu
         run: |
           set -euxo pipefail
-          cd main/mcgg-zygisk-module
-          mkdir -p build && cd build
-          cmake .. \
+          cd main/mcgg-zygisk-module/module/src/main/cpp
+          mkdir -p include/imgui/backends
+          cp ../../../../../../imgui/imgui.cpp ../../../../../../imgui/imgui_demo.cpp \
+             ../../../../../../imgui/imgui_draw.cpp \
+             ../../../../../../imgui/imgui_tables.cpp ../../../../../../imgui/imgui_widgets.cpp \
+             include/imgui/
+          cp ../../../../../../imgui/imgui.h ../../../../../../imgui/imgui_internal.h \
+             include/imgui/
+          cp ../../../../../../imgui/imconfig.h ../../../../../../imgui/imstb_rectpack.h \
+             ../../../../../../imgui/imstb_textedit.h ../../../../../../imgui/imstb_truetype.h \
+             include/imgui/
+          cp ../../../../../../imgui/backends/imgui_impl_android.cpp \
+             ../../../../../../imgui/backends/imgui_impl_android.h \
+             ../../../../../../imgui/backends/imgui_impl_opengl3.cpp \
+             ../../../../../../imgui/backends/imgui_impl_opengl3.h \
+             ../../../../../../imgui/backends/imgui_impl_opengl3_loader.h \
+             include/imgui/backends/
+
+      - name: Build arm64-v8a
+        run: |
+          set -euxo pipefail
+          cd main/mcgg-zygisk-module/module/src/main/cpp
+          mkdir -p build/arm64-v8a
+          cd build/arm64-v8a
+          cmake ../.. \
             -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_LATEST_HOME/build/cmake/android.toolchain.cmake" \
             -DANDROID_ABI=arm64-v8a \
             -DANDROID_PLATFORM=android-24 \
             -DCMAKE_BUILD_TYPE=Release
           make -j$(nproc)
 
-      - name: Package module
+      - name: Package Magisk module
         run: |
           set -euxo pipefail
           cd main/mcgg-zygisk-module
-          mkdir -p out/zygisk
-          cp build/libmcgg-zygisk.so out/zygisk/arm64-v8a.so 2>/dev/null || \
-          cp build/libmcggzygisk.so out/zygisk/arm64-v8a.so 2>/dev/null || \
-          echo "Zygisk build skipped (optional)"
+          mkdir -p out/mcgg_mod_menu/zygisk
+          mkdir -p out/mcgg_mod_menu/files
+          cp module.prop out/mcgg_mod_menu/
+          cp service.sh out/mcgg_mod_menu/
+          cp module/src/main/cpp/build/arm64-v8a/libmcgg_mod_menu.so \
+             out/mcgg_mod_menu/zygisk/arm64-v8a.so
+          cp module/src/main/cpp/build/arm64-v8a/libmcgg_mod_menu.so \
+             out/mcgg_mod_menu/files/
+          ls -la out/mcgg_mod_menu/
 
       - uses: actions/upload-artifact@v4
         with:
-          name: mcgg-zygisk-module
-          path: main/mcgg-zygisk-module/out/
-          if-no-files-found: warn
+          name: mcgg-mod-menu-magisk
+          path: main/mcgg-zygisk-module/out/mcgg_mod_menu/
+          if-no-files-found: error
