@@ -77,10 +77,10 @@ bool Wait(int timeout_ms) {
 
     for (;;) {
         if (!g_handle) {
-            // RTLD_NOLOAD: cek termuat, jangan paksa load (kita tidak mau
-            // menyentuh stub sebelum packer menukarnya)
             g_handle = dlopen("libil2cpp.so", RTLD_NOLOAD | RTLD_NOW);
             if (!g_handle) g_handle = dlopen("libil2cpp.so", RTLD_NOW);
+            if (g_handle) LOGI("libil2cpp.so termuat");
+            else LOGW("libil2cpp.so BELUM termuat (waited %d ms)", waited);
         }
 
         if (g_handle && !api.domain_get) {
@@ -91,7 +91,26 @@ bool Wait(int timeout_ms) {
             LOGI("API il2cpp ter-resolve");
         }
 
-        // metadata siap? (ini yang menjawab masalah packer)
+        if (api.domain_get) {
+            Domain* dom = api.domain_get();
+            if (dom) {
+                size_t n = 0;
+                Assembly** list = api.domain_get_assemblies(dom, &n);
+                LOGI("domain OK, %zu assembly terdaftar", n);
+                if (list && n > 0) {
+                    for (size_t i = 0; i < n && i < 10; i++) {
+                        Image* img = api.assembly_get_image(list[i]);
+                        if (!img) continue;
+                        const char* nm = api.image_get_name(img);
+                        LOGI("  [%zu] %s", i, nm ? nm : "(null)");
+                    }
+                }
+            } else {
+                LOGW("domain_get() return null");
+            }
+        }
+
+        // metadata siap?
         if (api.domain_get && LocateCsImage()) {
             LOGI("il2cpp SIAP setelah %d ms", waited);
             return true;
