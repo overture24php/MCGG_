@@ -21,6 +21,7 @@ static void* (*il2cpp_class_get_field_from_name)(void* klass, const char* name) 
 static void* (*il2cpp_image_get_class)(void* image, uint32_t index) = nullptr;
 static const char* (*il2cpp_image_get_name)(void* image) = nullptr;
 static uint32_t (*il2cpp_image_get_class_count)(void* image) = nullptr;
+static const char* (*il2cpp_class_get_name)(void* klass) = nullptr;
 
 bool IL2CPP_Initialize() {
     // Find libil2cpp.so in loaded modules
@@ -39,6 +40,7 @@ bool IL2CPP_Initialize() {
     il2cpp_image_get_class = (decltype(il2cpp_image_get_class))dlsym(g_libil2cpp, "il2cpp_image_get_class");
     il2cpp_image_get_name = (decltype(il2cpp_image_get_name))dlsym(g_libil2cpp, "il2cpp_image_get_name");
     il2cpp_image_get_class_count = (decltype(il2cpp_image_get_class_count))dlsym(g_libil2cpp, "il2cpp_image_get_class_count");
+    il2cpp_class_get_name = (decltype(il2cpp_class_get_name))dlsym(g_libil2cpp, "il2cpp_class_get_name");
     il2cpp_get_corlib = (decltype(il2cpp_get_corlib))dlsym(g_libil2cpp, "il2cpp_get_corlib");
     
     if (!il2cpp_class_from_name || !il2cpp_class_get_method_from_name) {
