@@ -20,6 +20,7 @@
 #include <pthread.h>
 #include <unistd.h>
 #include <ctime>
+#include <cstdio>
 
 namespace feat {
 void TriggerAutoWin();      // autowin.cpp

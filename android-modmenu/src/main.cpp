@@ -130,7 +130,7 @@ void InitializeImGui() {
     
     // Setup style
     ImGui::StyleColorsDark();
-    ImGuiStyle& style = ImGui::GetIO().DisplaySize;
+    // Note: styling applied via ImGui::GetStyle() when needed
     
     // Initialize backends
     // Note: Android surface initialization happens in onSurfaceCreated
