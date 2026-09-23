@@ -3,6 +3,7 @@
 // Format: satu "key=0/1" per baris, baris kosong / "#" diabaikan.
 // ---------------------------------------------------------------------------
 #include "config.h"
+#include "features.h"
 #include "log.h"
 
 #include <cstdio>
@@ -31,6 +32,7 @@ static void ApplyKV(const char* k, int v) {
     else if (!std::strcmp(k, "autowin"))        t.autowin = b;
     else if (!std::strcmp(k, "autostack"))      t.autostack = b;
     else if (!std::strcmp(k, "clear_stack"))    t.clear_stack = b;
+    else if (!std::strcmp(k, "skip_guide"))     t.skip_guide = b;
 }
 
 void Load() {
@@ -56,9 +58,9 @@ static void* WatcherThread(void*) {
     for (;;) {
         Load();
 
-        // clear_stack = aksi sekali pakai
+        // clear_stack = aksi sekali pakai -> reset LENGKAP (count + seen GUID)
         if (t.clear_stack) {
-            stack_count = 0;
+            feat::ResetStackState();
             t.clear_stack = false;
             LOGI("[STACK] counter direset manual -> 0/%d", stack_target);
         }
@@ -69,8 +71,9 @@ static void* WatcherThread(void*) {
 
 void StartWatcher() {
     Load();
-    LOGI("cfg: preclear=%d guin=%d bypass=%d autowin=%d stack=%d",
-         t.preclear, t.autobuy_guin, t.autowin_bypass, t.autowin, t.autostack);
+    LOGI("cfg: preclear=%d guin=%d bypass=%d autowin=%d stack=%d skip=%d",
+         t.preclear, t.autobuy_guin, t.autowin_bypass, t.autowin, t.autostack,
+         t.skip_guide);
     pthread_t th;
     pthread_create(&th, nullptr, WatcherThread, nullptr);
     pthread_detach(th);

@@ -23,6 +23,8 @@ struct Toggles {
     bool autostack      = false;
     // 6. reset counter stack (sekali pakai, otomatis balik false)
     bool clear_stack    = false;
+    // 7. skip tutorial battle guide (sekali pakai, otomatis balik false)
+    bool skip_guide     = false;
 };
 
 extern Toggles t;

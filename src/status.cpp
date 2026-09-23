@@ -28,6 +28,7 @@ void Update() {
     std::fprintf(f, "autowin: %d\n", cfg::t.autowin);
     std::fprintf(f, "autostack: %d\n", cfg::t.autostack);
     std::fprintf(f, "clear_stack: %d\n", cfg::t.clear_stack);
+    std::fprintf(f, "skip_guide: %d\n", cfg::t.skip_guide);
     std::fprintf(f, "\n=== Stack ===\n");
     std::fprintf(f, "count: %d/%d\n", cfg::stack_count, cfg::stack_target);
 

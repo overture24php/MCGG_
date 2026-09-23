@@ -4,16 +4,17 @@ Mod native untuk `com.mobilechess.gp` v1.2.98.3143 (Unity IL2CPP).
 Dibangun sebagai satu `.so` mandiri: frida-gum tertanam (tanpa frida-server),
 resolver IL2CPP **by-name** (bukan offset), hook mode attach.
 
-## 6 fitur
+## 7 toggle
 
 | # | Fitur | Toggle di conf | Status |
 |---|---|---|---|
-| 1 | Shop Pre-Clear | `preclear` | beli slot murah di awal round, sisakan hero termahal |
-| 2 | Auto Buy Guinevere | `autobuy_guin` | beli slot yang sudah ditandai gratis |
-| 3 | Auto Win Bypass | `autowin_bypass` | bersihkan flag invalid di paket hasil (default ON) |
+| 1 | Shop Pre-Clear | `preclear` | port Scavenger.cs: beli slot murah di awal round, sisakan hero termahal |
+| 2 | Auto Buy Guinevere | `autobuy_guin` | port ScheduleAutoBuys/TryExecutePending: beli slot yang sudah ditandai gratis |
+| 3 | Auto Win Bypass | `autowin_bypass` | 3 paket: Result/LogRound/Suivive visit(SdpPacker) — default ON |
 | 4 | Auto Win | `autowin` | trigger instan, sekali tekan |
-| 5 | Auto Stack 14 | `autostack` | hitung hero 1g naik bintang 2, stop di 14 |
+| 5 | Auto Stack 14 | `autostack` | port AutoStackTick: hero 1g -> bintang 2 = stack, stop di 14 |
 | 6 | Clear Stack | `clear_stack` | reset counter tanpa keluar match |
+| 7 | Skip Guide | `skip_guide` | SkipTutorialBattleGuide(true), sekali tekan |
 
 ## Build
 
@@ -46,10 +47,11 @@ autowin_bypass=1
 autowin=0
 autostack=0
 clear_stack=0
+skip_guide=0
 ```
 
-`autowin=1` dan `clear_stack=1` adalah aksi sekali-pakai — mod otomatis
-mengembalikannya ke 0 setelah dijalankan.
+`autowin=1`, `clear_stack=1` dan `skip_guide=1` adalah aksi sekali-pakai —
+mod otomatis mengembalikannya ke 0 setelah dijalankan.
 
 ## Verifikasi
 
@@ -95,7 +97,20 @@ sampai benar-benar ada — bukan menganggapnya siap.
 ```
 
 **Game jalan di child process.** Injektor harus menargetkan proses anak, bukan
-induk — di proses induk `libil2cpp.so` belum ada.
+induk — di proses induk `libil2cpp.so` belum ada. Zygisk loader
+(`mcgg-zygisk-module/zygisk/`) berjalan di post-fork child (`postAppSpecialize`),
+poll `libil2cpp.so` via `RTLD_NOLOAD` sampai termuat, baru `dlopen`
+`files/libmcggmod.so` — payload sendiri menunggu metadata siap (`il2::Wait`).
+`zygisk.hpp` bundled di repo (tidak download saat CI build).
+
+**Frame tick.** `UnityEngine.Time.get_deltaTime` (UnityEngine.CoreModule.dll)
+di-hook sebagai pengganti `OnUpdate` PC: pre-clear window 200ms, eksekusi
+Pending free-buy, dan AutoStackTick dijalankan dari hook ini (thread game).
+
+**Argumen stack.** Hook memuat 16 argumen (x0..x7 + stack) karena
+`IShowHandler_CraftHeroAtBattleField` menaruh `newStarLevel` di stack arg
+index 11 (layout AAPCS64). 3 craft pertama log nilai mentah `a3..a12` untuk
+verifikasi layout dari logcat.
 
 ## Pitfall versi PC yang sudah dihindari di kode ini
 
@@ -133,15 +148,21 @@ desync → ketendang. Terbukti di versi PC.
 ```
 CMakeLists.txt
 .github/workflows/build.yml     unduh frida-gum devkit + build NDK
+scripts/deploy.ps1              push conf / baca status / logcat via adb
 src/
   main.cpp                      .init_array + JNI_OnLoad, thread utama
-  il2cpp.{h,cpp}                resolver by-name, tunggu packer selesai
-  hook.{h,cpp}                  wrapper frida-gum (mode attach)
+  il2cpp.{h,cpp}                resolver by-name + walk parent + image lain
+  hook.{h,cpp}                  wrapper frida-gum (16 arg, mode attach)
   config.{h,cpp}                toggle dari /sdcard/mcggmod.conf + watcher
+  game.{h,cpp}                  state/hook bersama + frame tick + dispatcher
   log.h                         logcat tag MCGGMOD
   features/
-    autowin.cpp                 fitur 3 + 4
-    autostack.cpp               fitur 5 + 6
-    preclear.cpp                fitur 1
-    freebuy.cpp                 fitur 2
+    autowin.cpp                 fitur 3 + 4 + skip guide
+    autostack.cpp               fitur 5 + clear stack
+    preclear.cpp                fitur 1 (port Scavenger.cs)
+    freebuy.cpp                 fitur 2 (port ScheduleAutoBuys)
+mcgg-zygisk-module/
+  module.prop
+  zygisk/main.cpp               loader Zygisk (tunggu libil2cpp -> dlopen payload)
+  zygisk/zygisk.hpp             header bundled
 ```

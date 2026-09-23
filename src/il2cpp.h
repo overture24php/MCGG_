@@ -42,6 +42,13 @@ struct Api {
     const char* (*class_get_name)(Class*);
     void*     (*object_new)(Class*);
     void*     (*runtime_invoke)(Method*, void* obj, void** params, void** exc);
+    // --- tambahan: disambiguate overload + walk parent + cari image lain ---
+    Class*    (*class_get_parent)(Class*);
+    void*     (*class_get_methods)(Class*, void** iter);          // return Method*
+    const char* (*method_get_name)(Method*);
+    uint32_t  (*method_get_param_count)(Method*);
+    const void* (*method_get_param)(Method*, uint32_t index);     // return Il2CppType*
+    Class*    (*type_get_class)(const void* type);
 };
 
 extern Api api;
@@ -64,8 +71,32 @@ Image* CsImage();
 Class* FindClass(const char* ns, const char* name);
 
 // Alamat native method (untuk dipasang hook). argc -1 = abaikan jumlah arg.
+// PENTING: semua MethodPtr/MethodFind MEWALK parent class (Singleton<T> dst).
 void* MethodPtr(Class* k, const char* name, int argc = -1);
 void* MethodPtr(const char* ns, const char* cls, const char* name, int argc = -1);
+
+// Pasangan methodPointer + MethodInfo*. generated IL2CPP selalu menerima
+// MethodInfo* sebagai argumen TERAKHIR -> struct M dipakai saat memanggil
+// method game langsung dari C++.
+struct M {
+    void* fn = nullptr;   // methodPointer (native code)
+    void* mi = nullptr;   // MethodInfo*
+    bool ok() const { return fn != nullptr; }
+};
+M MethodFind(Class* k, const char* name, int argc = -1);
+M MethodFind(const char* ns, const char* cls, const char* name, int argc = -1);
+// Overload visit(SdpPacker, bool) vs visit(SdpUnpacker, bool): membedakan
+// lewat nama class arg ke-0 ("SdpPacker").
+M MethodFindArg0(Class* k, const char* name, int argc, const char* arg0Class);
+
+// field dengan walk parent (m_ChessPlayerData di MCLogicFighter, _instance
+// di Singleton<T>, dst)
+Field* FieldFind(Class* k, const char* name);
+
+// image SELAIN Assembly-CSharp: UnityEngine.CoreModule.dll (Time.get_deltaTime
+// dipakai sebagai frame tick), dll.
+Image* FindImage(const char* name);
+Class* FindClassIn(Image* img, const char* ns, const char* name);
 
 // offset field instance -> baca/tulis langsung lewat pointer objek
 size_t FieldOffset(Class* k, const char* name);

@@ -40,6 +40,12 @@ static bool ResolveAll() {
     RESOLVE(class_get_name,            "il2cpp_class_get_name");
     RESOLVE(object_new,                "il2cpp_object_new");
     RESOLVE(runtime_invoke,            "il2cpp_runtime_invoke");
+    RESOLVE(class_get_parent,          "il2cpp_class_get_parent");
+    RESOLVE(class_get_methods,         "il2cpp_class_get_methods");
+    RESOLVE(method_get_name,           "il2cpp_method_get_name");
+    RESOLVE(method_get_param_count,    "il2cpp_method_get_param_count");
+    RESOLVE(method_get_param,          "il2cpp_method_get_param");
+    RESOLVE(type_get_class,            "il2cpp_type_get_class");
     return true;
 }
 #undef RESOLVE
@@ -165,24 +171,111 @@ Class* FindClass(const char* ns, const char* name) {
     return k;
 }
 
-void* MethodPtr(Class* k, const char* name, int argc) {
+// ---- cari image lain (UnityEngine.CoreModule.dll, dsb) ----
+Image* FindImage(const char* name) {
+    if (!api.domain_get || !name) return nullptr;
+    Domain* dom = api.domain_get();
+    if (!dom) return nullptr;
+    ScopedThread st;
+    size_t n = 0;
+    Assembly** list = api.domain_get_assemblies(dom, &n);
+    if (!list) return nullptr;
+    for (size_t i = 0; i < n; i++) {
+        Image* img = api.assembly_get_image(list[i]);
+        if (!img) continue;
+        const char* nm = api.image_get_name(img);
+        if (nm && std::strcmp(nm, name) == 0) return img;
+    }
+    LOGW("image TIDAK ADA: %s", name);
+    return nullptr;
+}
+
+Class* FindClassIn(Image* img, const char* ns, const char* name) {
+    if (!img || !api.class_from_name) return nullptr;
+    Class* k = api.class_from_name(img, ns ? ns : "", name);
+    if (!k) LOGW("class TIDAK ADA di image: %s%s%s", ns && *ns ? ns : "", ns && *ns ? "." : "", name);
+    return k;
+}
+
+// ---- walk parent: il2cpp_class_get_method/field_from_name TIDAK menjamin
+//      menemukan anggota yang dideklarasikan di base class (Singleton<T>,
+//      MCLogicFighter, ...) -> walk manual pakai class_get_parent. ----
+static Method* FindMethodOwn(Class* k, const char* name, int argc) {
     if (!k || !api.class_get_method_from_name) return nullptr;
-    Method* m = api.class_get_method_from_name(k, name, argc);
-    if (!m) { LOGW("method TIDAK ADA: %s (argc=%d)", name, argc); return nullptr; }
-    // MethodInfo layout: field pertama = methodPointer (native code)
-    void* p = *reinterpret_cast<void**>(m);
-    if (!p) LOGW("method %s ada tapi methodPointer null", name);
-    return p;
+    return api.class_get_method_from_name(k, name, argc);
+}
+
+M MethodFind(Class* k, const char* name, int argc) {
+    M r;
+    for (Class* c = k; c; c = api.class_get_parent ? api.class_get_parent(c) : nullptr) {
+        Method* m = FindMethodOwn(c, name, argc);
+        if (m) { r.mi = m; r.fn = *reinterpret_cast<void**>(m); break; }
+    }
+    if (!r.mi) {
+        LOGW("method TIDAK ADA: %s (argc=%d)", name, argc);
+    } else if (!r.fn) {
+        LOGW("method %s ada tapi methodPointer null", name);
+        r.mi = nullptr;
+    }
+    return r;
+}
+
+M MethodFind(const char* ns, const char* cls, const char* name, int argc) {
+    return MethodFind(FindClass(ns, cls), name, argc);
+}
+
+// Membedakan overload via nama class arg ke-0 (SdpPacker vs SdpUnpacker).
+M MethodFindArg0(Class* k, const char* name, int argc, const char* arg0Class) {
+    M r;
+    if (!k || !api.class_get_methods || !api.method_get_name ||
+        !api.method_get_param_count || !api.method_get_param || !api.type_get_class) {
+        LOGE("MethodFindArg0: API resolver belum lengkap");
+        return r;
+    }
+    for (Class* c = k; c; c = api.class_get_parent ? api.class_get_parent(c) : nullptr) {
+        void* iter = nullptr;
+        while (Method* m = api.class_get_methods(c, &iter)) {
+            const char* mn = api.method_get_name(m);
+            if (!mn || std::strcmp(mn, name) != 0) continue;
+            if ((int)api.method_get_param_count(m) != argc) continue;
+            const void* t = api.method_get_param(m, 0);
+            Class* pc = t ? api.type_get_class(t) : nullptr;
+            const char* pn = pc ? api.class_get_name(pc) : nullptr;
+            if (pn && std::strcmp(pn, arg0Class) == 0) {
+                r.mi = m;
+                r.fn = *reinterpret_cast<void**>(m);
+                if (!r.fn) { LOGW("method %s(%s) methodPointer null", name, arg0Class); r.mi = nullptr; }
+                goto done;
+            }
+        }
+    }
+done:
+    if (!r.mi)
+        LOGW("method TIDAK ADA: %s arg0=%s (argc=%d)", name, arg0Class, argc);
+    return r;
+}
+
+void* MethodPtr(Class* k, const char* name, int argc) {
+    return MethodFind(k, name, argc).fn;
 }
 
 void* MethodPtr(const char* ns, const char* cls, const char* name, int argc) {
     return MethodPtr(FindClass(ns, cls), name, argc);
 }
 
+Field* FieldFind(Class* k, const char* name) {
+    if (!k || !api.class_get_field_from_name) return nullptr;
+    for (Class* c = k; c; c = api.class_get_parent ? api.class_get_parent(c) : nullptr) {
+        Field* f = api.class_get_field_from_name(c, name);
+        if (f) return f;
+    }
+    LOGW("field TIDAK ADA: %s", name);
+    return nullptr;
+}
+
 size_t FieldOffset(Class* k, const char* name) {
-    if (!k || !api.class_get_field_from_name) return 0;
-    Field* f = api.class_get_field_from_name(k, name);
-    if (!f) { LOGW("field TIDAK ADA: %s", name); return 0; }
+    Field* f = FieldFind(k, name);
+    if (!f) return 0;
     return api.field_get_offset(f);
 }
 
@@ -193,7 +286,7 @@ size_t FieldOffset(const char* ns, const char* cls, const char* name) {
 bool StaticGet(const char* ns, const char* cls, const char* field, void* out) {
     Class* k = FindClass(ns, cls);
     if (!k) return false;
-    Field* f = api.class_get_field_from_name(k, field);
+    Field* f = FieldFind(k, field);
     if (!f) return false;
     api.field_static_get_value(f, out);
     return true;
@@ -202,7 +295,7 @@ bool StaticGet(const char* ns, const char* cls, const char* field, void* out) {
 bool StaticSet(const char* ns, const char* cls, const char* field, void* val) {
     Class* k = FindClass(ns, cls);
     if (!k) return false;
-    Field* f = api.class_get_field_from_name(k, field);
+    Field* f = FieldFind(k, field);
     if (!f) return false;
     api.field_static_set_value(f, val);
     return true;
@@ -213,9 +306,11 @@ void* NewObject(const char* ns, const char* cls) {
     if (!k || !api.object_new) return nullptr;
     void* obj = api.object_new(k);
     if (!obj) return nullptr;
-    // panggil .ctor() supaya field terinisialisasi (List, dll)
-    void* ctor = MethodPtr(k, ".ctor", 0);
-    if (ctor) reinterpret_cast<void (*)(void*)>(ctor)(obj);
+    // panggil .ctor() supaya field terinisialisasi (List, dll).
+    // generated IL2CPP: .ctor(this, const MethodInfo*) -> kirim MethodInfo*.
+    M ctor = MethodFind(k, ".ctor", 0);
+    if (ctor.ok())
+        reinterpret_cast<void (*)(void*, void*)>(ctor.fn)(obj, ctor.mi);
     return obj;
 }
 

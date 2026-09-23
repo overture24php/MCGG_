@@ -106,55 +106,41 @@ jobs:
 
   zygisk:
     runs-on: ubuntu-latest
-    needs: modmenu
+    needs: mcggmod
     steps:
       - uses: actions/checkout@v4
         with:
           path: main
 
-      - name: Download mod menu artifact
+      - name: Download payload (libmcggmod.so)
         uses: actions/download-artifact@v4
         with:
-          name: mcgg-modmenu-arm64
-          path: modmenu_artifact
+          name: libmcggmod-arm64
+          path: payload_artifact
 
-      - name: Download Zygisk header
+      - name: Build Zygisk loader (zygisk.hpp bundled, tanpa download)
         run: |
           set -euxo pipefail
-          mkdir -p zygisk_header
-          curl -fL --retry 3 -o zygisk_header/zygisk.hpp \
-            "https://raw.githubusercontent.com/topjohnwu/magisk/master/native/include/zygisk/zygisk.hpp" || \
-          curl -fL --retry 3 -o zygisk_header/zygisk.hpp \
-            "https://raw.githubusercontent.com/Dr-TSNG/Magisk/master/native/include/zygisk/zygisk.hpp" || \
-          echo "Zygisk header download failed, will use bundled"
-
-      - name: Build Zygisk loader
-        run: |
-          set -euxo pipefail
-          cd main/mcgg-zygisk-module/zygisk
-          mkdir -p build && cd build
-          cmake ../.. \
+          cmake -S main/mcgg-zygisk-module/zygisk -B main/mcgg-zygisk-module/zygisk/build \
             -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_LATEST_HOME/build/cmake/android.toolchain.cmake" \
             -DANDROID_ABI=arm64-v8a \
             -DANDROID_PLATFORM=android-24 \
             -DCMAKE_BUILD_TYPE=Release \
-            -DZYGISK_HEADER_DIR="$(pwd)/../../../../zygisk_header" \
-            -DMODMENU_PATH="$(pwd)/../../../../modmenu_artifact/libmcgg_mod_menu.so"
-          make -j$(nproc)
+            -GNinja
+          cmake --build main/mcgg-zygisk-module/zygisk/build -j"$(nproc)"
 
       - name: Package Magisk module
         run: |
           set -euxo pipefail
           cd main/mcgg-zygisk-module
-          mkdir -p out/mcgg_mod_menu/zygisk
-          mkdir -p out/mcgg_mod_menu/files
+          mkdir -p out/mcgg_mod_menu/zygisk out/mcgg_mod_menu/files
           cp module.prop out/mcgg_mod_menu/
           cp zygisk/build/libmcgg-zygisk.so out/mcgg_mod_menu/zygisk/arm64-v8a.so
-          cp ../../../modmenu_artifact/libmcgg_mod_menu.so out/mcgg_mod_menu/files/
-          ls -la out/mcgg_mod_menu/
+          cp "$GITHUB_WORKSPACE/payload_artifact/libmcggmod.so" out/mcgg_mod_menu/files/
+          ls -laR out/mcgg_mod_menu/
 
       - uses: actions/upload-artifact@v4
         with:
-          name: mcgg-mod-menu-magisk
+          name: mcgg-zygisk-magisk
           path: main/mcgg-zygisk-module/out/mcgg_mod_menu/
           if-no-files-found: error

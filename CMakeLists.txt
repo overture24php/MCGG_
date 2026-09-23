@@ -13,6 +13,7 @@ add_library(mcggmod SHARED
     src/hook.cpp
     src/config.cpp
     src/status.cpp
+    src/game.cpp
     src/features/autowin.cpp
     src/features/autostack.cpp
     src/features/preclear.cpp

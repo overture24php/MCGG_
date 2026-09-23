@@ -36,9 +36,11 @@ static void on_enter_cb(GumInvocationListener* listener,
                         GumInvocationContext* ic) {
     auto* self = reinterpret_cast<McggListener*>(listener);
     if (!self->on_enter) return;
-    // arm64: arg 0..7 = x0..x7. args[0] = `this` untuk instance method.
-    void* args[8];
-    for (int i = 0; i < 8; i++)
+    // arm64: arg 0..7 = x0..x7, arg 8+ = stack arg (struct besar /
+    // parameter ke-9 dst, mis. newStarLevel di
+    // IShowHandler_CraftHeroAtBattleField). args[0] = `this` untuk instance.
+    void* args[16];
+    for (int i = 0; i < 16; i++)
         args[i] = gum_invocation_context_get_nth_argument(ic, i);
     self->on_enter(args);
 }
@@ -47,8 +49,9 @@ static void on_leave_cb(GumInvocationListener* listener,
                         GumInvocationContext* ic) {
     auto* self = reinterpret_cast<McggListener*>(listener);
     if (!self->on_leave) return;
-    void* args[8];
-    for (int i = 0; i < 8; i++)
+    // sama dengan on_enter: 16 slot supaya stack arg (x8+) ikut terbaca.
+    void* args[16];
+    for (int i = 0; i < 16; i++)
         args[i] = gum_invocation_context_get_nth_argument(ic, i);
     self->on_leave(args, gum_invocation_context_get_return_value(ic));
 }

@@ -15,23 +15,11 @@
 #include "features.h"
 #include "status.h"
 #include "log.h"
-
 #include <jni.h>
 #include <pthread.h>
 #include <unistd.h>
 #include <ctime>
 #include <cstdio>
-
-namespace feat {
-void TriggerAutoWin();      // autowin.cpp
-void ResetStackState();     // autostack.cpp
-void InitAll() {
-    InitAutoWin();
-    InitAutoStack();
-    InitPreClear();
-    InitFreeBuy();
-}
-} // namespace feat
 
 static void WriteStatus(const char* step) {
     FILE* f = std::fopen("/sdcard/mcggmod_status.txt", "w");
@@ -71,15 +59,22 @@ static void* MainThread(void*) {
     feat::InitAll();
     LOGI("=== semua hook terpasang ===");
 
-    // 6. loop kecil: layani aksi sekali-pakai (autowin trigger) + update status
+    // 6. loop kecil: layani aksi sekali-pakai (autowin / skip guide) + status
     bool prev_autowin = false;
-    int  status_tick = 0;
+    bool prev_skip    = false;
+    int  status_tick  = 0;
     for (;;) {
         if (cfg::t.autowin && !prev_autowin) {
             feat::TriggerAutoWin();
             cfg::t.autowin = false;
         }
         prev_autowin = cfg::t.autowin;
+
+        if (cfg::t.skip_guide && !prev_skip) {
+            feat::TriggerSkipGuide();
+            cfg::t.skip_guide = false;
+        }
+        prev_skip = cfg::t.skip_guide;
 
         // update status file tiap ~1 detik
         if (++status_tick >= 2) {
@@ -91,7 +86,6 @@ static void* MainThread(void*) {
     }
     return nullptr;
 }
-
 static void StartOnce() {
     static bool started = false;
     if (started) return;
