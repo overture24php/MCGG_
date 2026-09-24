@@ -3,7 +3,7 @@
 // Format: satu "key=0/1" per baris, baris kosong / "#" diabaikan.
 // ---------------------------------------------------------------------------
 #include "config.h"
-#include "features.h"
+#include "feature_api.h"
 #include "log.h"
 
 #include <cstdio>

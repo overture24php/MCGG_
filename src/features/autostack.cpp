@@ -19,7 +19,7 @@
 //   -> newStarLevel di CraftField = STACK arg index 11 (hook 16 arg).
 // TIDAK pakai <set>/<vector> (NDK 29 rune table): array fixed + linear scan.
 // ---------------------------------------------------------------------------
-#include "features.h"
+#include "feature_api.h"
 #include "game.h"
 #include "il2cpp.h"
 #include "hook.h"

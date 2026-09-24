@@ -9,7 +9,7 @@
 // enum FreeBuyHeroType: None=0 ByTimes=1 ByRate=2 ByGoGoCard=3
 // ByTimes throttle 2 detik (PC: LastByTimesBuyMs).
 // ---------------------------------------------------------------------------
-#include "features.h"
+#include "feature_api.h"
 #include "game.h"
 #include "il2cpp.h"
 #include "config.h"

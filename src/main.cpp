@@ -12,7 +12,7 @@
 #include "il2cpp.h"
 #include "hook.h"
 #include "config.h"
-#include "features.h"
+#include "feature_api.h"
 #include "status.h"
 #include "log.h"
 #include <jni.h>

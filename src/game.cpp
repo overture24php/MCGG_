@@ -8,7 +8,7 @@
 // Dipanggil hanya dari thread game (sudah attach ke domain il2cpp).
 // ---------------------------------------------------------------------------
 #include "game.h"
-#include "features.h"
+#include "feature_api.h"
 #include "il2cpp.h"
 #include "hook.h"
 #include "config.h"

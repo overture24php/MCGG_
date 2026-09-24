@@ -18,7 +18,7 @@
 //   Singleton<T>._instance (statis, parent walk)
 // MinReportBattleTime = 1200 — SAMA dengan PC Mod.cs (bukan 1500).
 // ---------------------------------------------------------------------------
-#include "features.h"
+#include "feature_api.h"
 #include "game.h"
 #include "il2cpp.h"
 #include "hook.h"
