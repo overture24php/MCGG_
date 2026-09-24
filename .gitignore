@@ -8,6 +8,17 @@ third_party/
 # konfigurasi lokal
 mcggmod.conf
 
+# standalone repack (tools besar + output APK)
+standalone/tools/
+standalone/work/
+standalone/out/
+standalone/classes/
+standalone/dex/
+standalone/tmpcheck/
+standalone/*.log
+standalone/*.err
+standalone/keystore*
+
 # editor
 .vscode/
 .idea/

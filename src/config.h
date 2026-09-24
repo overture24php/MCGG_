@@ -37,4 +37,14 @@ void Load();          // baca /sdcard/mcggmod.conf (one-shot = edge 0 -> 1)
 void Save();          // tulis ulang file dari state `t` (reset one-shot ke 0)
 void StartWatcher();  // thread: reload tiap 2 detik + jalankan clear_stack
 
+// ---- bridge menu in-process (JNI, src/bridge.cpp) ----
+// SetPersist: ubah persistent langsung di memori + tulis file; key di-LOCK
+//   supaya Load() berikutnya tidak menimpa dari file lama (misal file tidak
+//   bisa ditulis /sdcard karena scoped storage).
+void SetPersist(const char* key, bool on);
+bool GetPersist(const char* key);
+// TriggerOnce: nyalakan one-shot di memori; loop main/watcher konsumsi dalam
+//   <= 2 detik (tanpa lewat file — lebih cepat & tanpa tergantung izin storage).
+void TriggerOnce(const char* key);
+
 } // namespace cfg

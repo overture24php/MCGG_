@@ -1,16 +1,46 @@
 # Cara Pakai MCGG Mod Android (v1.2)
 
 Mod untuk game **Magic Chess: Go Go** `com.mobilechess.gp` v1.2.98.3143 (arm64).
-Ada **3 komponen** + 1 APK pendukung. Baca dulu bagian "Mana yang saya butuhkan?"
+Ada **4 jalur** pemakaian. Baca dulu bagian "Mana yang saya butuhkan?"
 
 ## Mana yang saya butuhkan?
 
 | Kebutuhan | Pakai ini |
 |---|---|
+| **TANPA ROOT** — APK game yang sudah dimodif, menu ada di dalam game | **Standalone repack** (bagian 0) |
 | Cara paling mudah, sekali flash, otomatis tiap buka game | **Magisk module** (wajib HP root + Zygisk) |
 | Toggle fitur di layar saat game berjalan | **APK MCGG Mod Menu** (boleh tanpa root, tapi mod payload tetap butuh Zygisk) |
 | Injeksi manual per-session (risiko lebih tinggi, anti-detek ptrace) | `libmcggmod.so` + `mcggmod_inject.sh` via jshook/ptrace |
 | Menu ImGui lama berbasis JsHook | `libmcgg_mod_menu.so` — **tidak direkomendasikan** (butuh JsHook, sebagian tombol tidak terhubung ke payload) |
+
+## 0. Standalone Repack (TANPA ROOT — direkomendasikan untuk HP non-root)
+
+APK game dipatch: `libmcggmod.so` + menu Java dimasukkan ke dalam APK, lalu ditandatangani ulang.
+Auto-start via `<provider>` di manifest (berjalan saat proses game dibuat) — **tanpa root, tanpa Magisk, tanpa APK terpisah, tanpa izin tambahan**.
+
+**Yang dibutuhkan (di PC Windows):**
+- Java (`java` + `javac` + `keytool` di PATH)
+- APK asli game (antisplit, single file)
+- File `libmcggmod.so` dari artefak CI `libmcggmod-arm64` (atau pakai kit lengkap `mcgg-standalone-kit`)
+
+**Langkah:**
+
+```powershell
+cd standalone
+.\repack.ps1 -Apk "D:\path\ke\com.mobilechess.gp.apk"
+```
+
+Script otomatis: unduh apktool/r8/build-tools sekali → kompilasi menu Java → decode APK → sisip provider → build → inject `classesN.dex` + `lib/arm64-v8a/libmcggmod.so` → zipalign → sign. Hasil: `standalone\out\mcgg-standalone.apk`.
+
+**Di HP:**
+1. **Uninstall MCGG asli dulu** (signature beda, tidak bisa ditimpa). Peringatan: akun guest tersimpan di data app — ikat ke akun Moonton dulu kalau mau aman.
+2. Install `mcgg-standalone.apk`.
+3. Buka game — panel menu muncul otomatis (bisa di-drag, tombol `–` menyembunyikan).
+
+**Keterbatasan:**
+- Update game = harus repack ulang APK versi baru.
+- Kalau server memeriksa signature, login online bisa ditolak (belum terbukti — laporkan kalau terjadi).
+- Hanya arm64. APK hasil repack **jangan dibagikan publik** (mengandung seluruh game).
 
 ## 1. Magisk Module (jalur utama)
 
@@ -87,6 +117,7 @@ Dari PC:
 
 | Artefak | Isi | Untuk apa |
 |---|---|---|
+| `mcgg-standalone-kit` | `repack.ps1` + `libmcggmod.so` + `menu.dex` + source Java | repack APK tanpa root (bagian 0) |
 | `mcgg-zygisk-magisk` | `mcgg-zygisk-flashable.zip` | flash di Magisk (jalur utama) |
 | `mcgg-modmenu-apk` | `MCGGModMenu.apk` | panel toggle mengambang |
 | `libmcggmod-arm64` | `libmcggmod.so` + `mcggmod_inject.sh` | injeksi manual (jshook/ptrace); `.sh` = salinan ELF berpola nama libTool |
@@ -118,3 +149,4 @@ Push ke `main` → GitHub Actions (`github.com/overture24php/MCGG_`) membangun s
 - `modmenu` — mod menu ImGui legacy
 - `zygisk` — loader + packaging zip flashable
 - `apk` — APK mod menu (AGP 7.4.2 + Gradle wrapper, tanpa NDK)
+- `standalone-kit` — menu.dex + repack.ps1 + payload untuk jalur standalone tanpa root

@@ -14,6 +14,7 @@ add_library(mcggmod SHARED
     src/config.cpp
     src/status.cpp
     src/game.cpp
+    src/bridge.cpp
     src/features/autowin.cpp
     src/features/autostack.cpp
     src/features/preclear.cpp
