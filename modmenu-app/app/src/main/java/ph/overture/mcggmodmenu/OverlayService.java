@@ -43,7 +43,7 @@ public class OverlayService extends Service {
 
     private WindowManager wm;
     private View panelView;
-    private LinearLayout header;
+    private TextView header;
     private TextView statusView;
     private final Map<String, Switch> switches = new HashMap<>();
     private final Map<String, Button> oneShotButtons = new HashMap<>();

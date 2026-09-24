@@ -64,7 +64,7 @@ New-Item -ItemType Directory -Force -Path $ToolsDir | Out-Null
 
 Get-File $ApkToolJar 'https://github.com/iBotPeaches/Apktool/releases/download/v2.11.1/apktool_2.11.1.jar' 'apktool 2.11.1'
 Get-File $AndroidJar 'https://repo1.maven.org/maven2/com/google/android/android/4.1.1.4/android-4.1.1.4.jar' 'android.jar (API16 stub)'
-Get-File $R8Jar 'https://repo1.maven.org/maven2/com/android/tools/r8/8.3.37/r8-8.3.37.jar' 'r8 8.3.37'
+Get-File $R8Jar 'https://dl.google.com/dl/android/maven2/com/android/tools/r8/8.3.37/r8-8.3.37.jar' 'r8 8.3.37'
 
 if (-not (Test-Path (Join-Path $BtDir 'zipalign.exe'))) {
     $btZip = Join-Path $ToolsDir 'bt.zip'
