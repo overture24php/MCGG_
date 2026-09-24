@@ -129,18 +129,61 @@ jobs:
             -GNinja
           cmake --build main/mcgg-zygisk-module/zygisk/build -j"$(nproc)"
 
-      - name: Package Magisk module
+      - name: Package Magisk module (flashable zip)
         run: |
           set -euxo pipefail
           cd main/mcgg-zygisk-module
-          mkdir -p out/mcgg_mod_menu/zygisk out/mcgg_mod_menu/files
-          cp module.prop out/mcgg_mod_menu/
-          cp zygisk/build/libmcgg-zygisk.so out/mcgg_mod_menu/zygisk/arm64-v8a.so
-          cp "$GITHUB_WORKSPACE/payload_artifact/libmcggmod.so" out/mcgg_mod_menu/files/
-          ls -laR out/mcgg_mod_menu/
+          STAGE=out/mcgg_mod_menu
+          rm -rf out
+          mkdir -p "$STAGE/zygisk" "$STAGE/files"
+          cp module.prop customize.sh "$STAGE/"
+          cp -r META-INF "$STAGE/"
+          cp zygisk/build/libmcgg-zygisk.so "$STAGE/zygisk/arm64-v8a.so"
+          cp "$GITHUB_WORKSPACE/payload_artifact/libmcggmod.so" "$STAGE/files/"
+          # zip langsung dari dalam folder -> struktur module di ROOT zip
+          (cd "$STAGE" && zip -r ../mcgg-zygisk-flashable.zip .)
+          unzip -l out/mcgg-zygisk-flashable.zip
 
       - uses: actions/upload-artifact@v4
         with:
           name: mcgg-zygisk-magisk
-          path: main/mcgg-zygisk-module/out/mcgg_mod_menu/
+          path: main/mcgg-zygisk-module/out/mcgg-zygisk-flashable.zip
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # APK mod menu mengambang: 7 toggle -> tulis /sdcard/mcggmod.conf.
+  # Tanpa NDK/frida — murni Java, dibangun dengan AGP + Gradle wrapper bundel.
+  # ---------------------------------------------------------------------------
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: main
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Build APK (release, signed debug key)
+        run: |
+          set -euxo pipefail
+          cd main/modmenu-app
+          chmod +x gradlew
+          ./gradlew --no-daemon --stacktrace :app:assembleRelease
+
+      - name: Ambil APK
+        run: |
+          set -euxo pipefail
+          find main/modmenu-app/app/build/outputs -name '*.apk' -print
+          cp main/modmenu-app/app/build/outputs/apk/release/app-release.apk \
+             "$GITHUB_WORKSPACE/MCGGModMenu.apk"
+          ls -la "$GITHUB_WORKSPACE/MCGGModMenu.apk"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mcgg-modmenu-apk
+          path: MCGGModMenu.apk
           if-no-files-found: error

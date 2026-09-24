@@ -1,0 +1,9 @@
+* text=auto
+*.sh text eol=lf
+*.bat text eol=crlf
+# skrip tanpa ekstensi yang dijalankan sh langsung
+gradlew text eol=lf
+mcgg-zygisk-module/META-INF/com/google/android/update-binary text eol=lf
+*.jar binary
+*.so binary
+*.png binary

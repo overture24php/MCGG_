@@ -60,21 +60,20 @@ static void* MainThread(void*) {
     LOGI("=== semua hook terpasang ===");
 
     // 6. loop kecil: layani aksi sekali-pakai (autowin / skip guide) + status
-    bool prev_autowin = false;
-    bool prev_skip    = false;
+    //    (edge trigger = di cfg::Load; di sini cukup konsumsi + tulis balik 0)
     int  status_tick  = 0;
     for (;;) {
-        if (cfg::t.autowin && !prev_autowin) {
+        if (cfg::t.autowin) {
             feat::TriggerAutoWin();
             cfg::t.autowin = false;
+            cfg::Save();
         }
-        prev_autowin = cfg::t.autowin;
 
-        if (cfg::t.skip_guide && !prev_skip) {
+        if (cfg::t.skip_guide) {
             feat::TriggerSkipGuide();
             cfg::t.skip_guide = false;
+            cfg::Save();
         }
-        prev_skip = cfg::t.skip_guide;
 
         // update status file tiap ~1 detik
         if (++status_tick >= 2) {

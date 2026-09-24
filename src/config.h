@@ -33,7 +33,8 @@ extern Toggles t;
 extern int  stack_count;
 extern int  stack_target;   // 14
 
-void Load();          // baca /sdcard/mcggmod.conf
+void Load();          // baca /sdcard/mcggmod.conf (one-shot = edge 0 -> 1)
+void Save();          // tulis ulang file dari state `t` (reset one-shot ke 0)
 void StartWatcher();  // thread: reload tiap 2 detik + jalankan clear_stack
 
 } // namespace cfg
