@@ -160,7 +160,9 @@ void TriggerSkipGuide() {
 
 void InitAutoWin() {
     // --- Cmd_Battle_Result_CS.visit(SdpPacker, bool) ---
+    LOGI("[BYPASS] cari Cmd_Battle_Result_CS ...");
     il2::Class* kRes = il2::FindClass("MTTDProto", "Cmd_Battle_Result_CS");
+    LOGI("[BYPASS] ketemu=%d", (int)(kRes != nullptr));
     if (kRes) {
         off_bt         = il2::FieldOffset(kRes, "iBattleTime");
         off_invalid    = il2::FieldOffset(kRes, "iIsInvalidBattle");

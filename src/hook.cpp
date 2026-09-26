@@ -82,6 +82,7 @@ bool Init() {
 bool Attach(void* addr, EnterFn on_enter, LeaveFn on_leave, const char* label) {
     if (!addr) { LOGW("hook %s: alamat null, dilewati", label); return false; }
     if (!Init()) return false;
+    LOGI("[HOOK] pasang %s @ %p ...", label, addr);
 
     auto* l = static_cast<McggListener*>(
         g_object_new(MCGG_TYPE_LISTENER, nullptr));
