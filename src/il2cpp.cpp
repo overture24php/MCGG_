@@ -385,23 +385,45 @@ static bool RelevantPath(const char* p) {
     return std::strncmp(p, "/data/", 6) == 0;
 }
 
-// Base runtime modul FILE (liblogic di app_libs): mapping pertama (offset 0)
-// dengan path yang cocok. Dipanggil tiap scan supaya base ikut pindah kalau
-// packer me-remap.
-static bool MatchFileBase(const char* map_path, uintptr_t start) {
+// Base runtime modul FILE (liblogic di app_libs). Packer mem-map file ini
+// lebih dari sekali (beberapa segment dengan offset 0), jadi base BENAR adalah
+// kandidat yang membuat alamat il2cpp_domain_get mendarat di region executable.
+// Semua kandidat dikumpulkan dulu, dipilih setelah scan selesai (lihat
+// PickFileBases).
+static std::vector<uintptr_t> g_pending_bases;   // (mod index, base)
+
+static bool CollectFileBase(const char* map_path, uintptr_t start) {
     const char* suf = std::strstr(map_path, "/app_libs/");
     if (!suf) return false;
-    for (auto& m : g_mods) {
-        if (!m.in_file) continue;
-        if (std::strstr(m.path.c_str(), suf)) {
-            if (m.base != start) {
-                m.base = start;
-                Trace("base %s = %p (dari maps)", suf, (void*)start);
-            }
-            return true;
-        }
+    for (size_t i = 0; i < g_mods.size(); i++) {
+        if (!g_mods[i].in_file) continue;
+        if (!std::strstr(g_mods[i].path.c_str(), suf)) continue;
+        for (uintptr_t b : g_pending_bases)
+            if (b == start) return true;           // sudah dicatat
+        g_pending_bases.push_back(start);
+        return true;
     }
     return false;
+}
+
+// Setelah maps selesai: pilih base per modul FILE dengan mengecek
+// base + st_value(il2cpp_domain_get) ada di region executable.
+static void PickFileBases() {
+    for (size_t i = 0; i < g_mods.size(); i++) {
+        if (!g_mods[i].in_file) continue;
+        uint64_t dv = 0;
+        if (!FindSym(g_mods[i], "il2cpp_domain_get", &dv) || !dv) continue;
+        uintptr_t chosen = 0;
+        for (uintptr_t b : g_pending_bases) {
+            if (IsExecAddr(b + dv)) { chosen = b; break; }
+        }
+        if (!chosen && !g_pending_bases.empty()) chosen = g_pending_bases.back();
+        if (chosen && g_mods[i].base != chosen) {
+            g_mods[i].base = chosen;
+            Trace("base %s = %p (picked, domain_get=%p)", g_mods[i].path.c_str(),
+                  (void*)chosen, (void*)(chosen + dv));
+        }
+    }
 }
 
 // Scan /proc/self/maps: base modul FILE + probe modul memori yang belum dikenal.
@@ -409,6 +431,7 @@ static void ScanMaps() {
     FILE* f = std::fopen("/proc/self/maps", "r");
     if (!f) { Trace("maps tidak terbuka"); return; }
     g_exec.clear();
+    g_pending_bases.clear();
     char line[768];
     while (std::fgets(line, sizeof(line), f)) {
         uintptr_t start = 0, end = 0, off = 0;
@@ -419,13 +442,14 @@ static void ScanMaps() {
         if (off != 0) continue;                      // hanya awal modul (header ELF)
         char* path = std::strchr(line, '/');
         if (path) { char* nl = std::strchr(path, '\n'); if (nl) *nl = 0; }
-        if (path && MatchFileBase(path, start)) continue;
+        if (path && CollectFileBase(path, start)) continue;
         if (path && !RelevantPath(path)) continue;   // /system, /apex, /dev, ...
         if (!path && perms[2] != 'x') continue;      // anonim: hanya kalau exec
         if (path && SeenPath(path)) continue;
         AddMemMod(start, path);
     }
     std::fclose(f);
+    PickFileBases();
 }
 
 // Satu putaran discovery (dipanggil Wait tiap ~1 detik).
@@ -446,18 +470,19 @@ static void DiscoverOnce() {
 }
 
 // Resolver symbol (urutan prioritas v3 — lihat komentar atas file).
+// CATATAN PENTING: dlsym(handle liblogic) bisa mengembalikan THUNK stub
+// libil2cpp.so (symbol nama sama, gate-nya masih null) -> domain_get() null
+// palsu. Jadi sumber FILE (st_value dari file yang sama dengan base runtime)
+// HARUS didahulukan; dlsym hanya cadangan.
 static void* Sym(const char* s) {
-    // 1) dlsym bila linker mengenal lib asli
-    if (g_handle) {
-        if (void* p = dlsym(g_handle, s)) return p;
-    }
-    // 2) modul FILE (app_libs/liblogic.so): base runtime + st_value
+    // 1) modul FILE (app_libs/liblogic.so): base runtime + st_value.
+    //    Paling tepat: symbol & base dari library yang sama.
     for (auto& m : g_mods) {
         if (!m.in_file || !m.base) continue;
         uint64_t v = 0;
         if (FindSym(m, s, &v) && v) return reinterpret_cast<void*>(m.base + v);
     }
-    // 3) gate m_<nama>_ptr dari modul memori (pola stub, kalau packer mengisi)
+    // 2) gate m_<nama>_ptr dari modul memori (pola stub; kalau packer mengisi)
     char g1[96], g2[96];
     std::snprintf(g1, sizeof(g1), "m_%s_ptr", s);
     std::snprintf(g2, sizeof(g2), "m_%s", s);
@@ -468,6 +493,11 @@ static void* Sym(const char* s) {
             void* real = nullptr;
             if (ReadPtrAt(m, v, &real) && real) return real;
         }
+    }
+    // 3) dlsym (cadangan; bisa kena thunk stub — gate check di TryDlopenOnce
+    //    sudah menyaring handle, tapi tetap urutan paling akhir)
+    if (g_handle) {
+        if (void* p = dlsym(g_handle, s)) return p;
     }
     // 4) symbol langsung dari modul memori TANPA gate
     for (auto& m : g_mods) {
@@ -531,7 +561,11 @@ static bool ResolveAll() {
 // selesai, domain_get() null atau daftar assembly kosong.
 static bool LocateCsImage() {
     Domain* dom = api.domain_get ? api.domain_get() : nullptr;
-    if (!dom) return false;
+    if (!dom) {
+        TraceState("domain_get() masih null (il2cpp_init belum dipanggil game)");
+        return false;
+    }
+    TraceState("domain_get() hidup, cari Assembly-CSharp.dll");
 
     ScopedThread st;   // attach dulu sebelum menyentuh domain
 
