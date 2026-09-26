@@ -197,6 +197,13 @@ void TriggerSkipGuide() {
 }
 
 void InitAutoWin() {
+    // Hook visit() hanya dipasang kalau bypassDiminta. intervened prolog fungsi
+    // saat game masih initializing bisa memicu restart loop; jadi default-nya
+    // TIDAK ada hook sama sekali kalau fitur off.
+    if (!cfg::t.autowin_bypass) {
+        LOGI("[BYPASS]OFF, hook visit tidak dipasang");
+        return;
+    }
     // --- Cmd_Battle_Result_CS.visit(SdpPacker, bool) ---
     LOGI("[BYPASS] cari Cmd_Battle_Result_CS ...");
     il2::Class* kRes = il2::FindClass("MTTDProto", "Cmd_Battle_Result_CS");

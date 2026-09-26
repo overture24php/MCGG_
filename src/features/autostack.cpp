@@ -201,6 +201,10 @@ void AutoStackFrame() {
 }
 
 void InitAutoStack() {
+    if (!cfg::t.autostack) {
+        LOGI("[STACK] OFF, hook CraftHero tidak dipasang");
+        return;
+    }
     il2::Class* bd = il2::FindClass("", "MCBattleData");
     if (!bd) { LOGE("[STACK] MCBattleData TIDAK ADA"); return; }
     void* r = il2::MethodPtr(bd, "IShowHandler_CraftHeroAtReserve", -1);

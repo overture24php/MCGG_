@@ -392,14 +392,21 @@ void Init() {
 
     // Frame tick: Time.get_deltaTime ada di UnityEngine.CoreModule.dll (bukan
     // Assembly-CSharp) -> cari image-nya dulu.
-    Image* unity = FindImage("UnityEngine.CoreModule.dll");
-    Class* kTime = unity ? FindClassIn(unity, "UnityEngine", "Time") : nullptr;
-    if (kTime)
-        hook::Attach(MethodPtr(kTime, "get_deltaTime", 0), OnFrame, nullptr,
-                     "Time.get_deltaTime");
-    else
-        LOGE("[GAME] Time.get_deltaTime tidak ditemukan -> frame tick MATI "
-             "(preclear/freebuy/autostack butuh tick)");
+    // Hook frame hanya kalau ada fitur yang butuh tick; tanpa fitur -> tanpa hook
+    // sama sekali (hook di game yang masih initializing = restart loop).
+    const bool want_frame = cfg::t.preclear || cfg::t.autostack || cfg::t.autobuy_guin;
+    if (want_frame) {
+        Image* unity = FindImage("UnityEngine.CoreModule.dll");
+        Class* kTime = unity ? FindClassIn(unity, "UnityEngine", "Time") : nullptr;
+        if (kTime)
+            hook::Attach(MethodPtr(kTime, "get_deltaTime", 0), OnFrame, nullptr,
+                         "Time.get_deltaTime");
+        else
+            LOGE("[GAME] Time.get_deltaTime tidak ditemukan -> frame tick MATI "
+                 "(preclear/freebuy/autostack butuh tick)");
+    } else {
+        LOGI("[GAME] frame tick OFF (tidak ada fitur tick aktif)");
+    }
 
     LOGI("[GAME] shared init: lbm=0x%zx refreshCost=0x%zx chessPd=0x%zx send=%s time=%s",
          off_lbm, off_refreshCost, off_chessPd,
