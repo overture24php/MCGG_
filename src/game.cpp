@@ -235,13 +235,31 @@ void ResetMatchState() {
 }
 
 // ==== hook bersama =========================================================
+// ---------------------------------------------------------------------------
+// ⚠️ Argumen hook HARUS diambil di on_enter, BUKAN di on_leave.
+// Di frida-gum, context saat on_leave berisi register SESUDAH fungsi kembali
+// (x0 = return value); argumen asli sudah tidak ada. Membaca a[] di leave
+// = baca sampah -> shop jadi null -> fitur diam tanpa log.
+// Bool di arm64 AAPCS64 ada di byte terendah register, jadi dibaca per-byte.
+// ---------------------------------------------------------------------------
+static thread_local void*    tl_shop   = nullptr;   // MCLogicHeroShop (this)
+static thread_local uint8_t  tl_isAuto = 0;         // Refresh.isAutoRefresh
+static thread_local uint64_t tl_accId  = 0;         // IShowHandler_RefreshShop
+static thread_local uint8_t  tl_slot   = 0;         // IShowHandler_BuyHero
+static thread_local int32_t  tl_failId = 0;         // IShowHandler_BuyHeroFail
+static thread_local void*    tl_pd     = nullptr;   // CheckFreeBuyHero (this)
+
 static void OnRefreshEnter(void** a) {
+    tl_shop   = a[0];
+    tl_isAuto = *reinterpret_cast<uint8_t*>(&a[2]); // bool = low byte x2
     RememberShop(a[0]);
 }
 
-static void OnRefreshLeave(void** a, void*) {
-    void* shop = a[0];
-    bool isAuto = reinterpret_cast<uintptr_t>(a[2]) != 0; // arg2 = isAutoRefresh
+static void OnRefreshLeave(void**, void*) {
+    void* shop   = tl_shop;
+    bool  isAuto = tl_isAuto != 0;
+    tl_shop = nullptr; tl_isAuto = 0;
+    if (!shop) return;
     feat::PreClearOnRefreshLeave(shop, isAuto);
     feat::FreeBuyOnRefresh(shop);
 }
@@ -250,27 +268,46 @@ static void OnTryTriggerEnter(void** a) {
     RememberShop(a[0]);
 }
 
-static void OnSyncRefreshLeave(void** a, void*) {
-    // IShowHandler_RefreshShop(accId x1, isAutoRefresh x2, ...)
-    uint64_t accId = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(a[1]));
+// IShowHandler_RefreshShop(accId x1, isAutoRefresh x2, ...)
+static void OnSyncRefreshEnter(void** a) {
+    tl_accId = reinterpret_cast<uintptr_t>(a[1]);
+}
+static void OnSyncRefreshLeave(void**, void*) {
+    uint64_t accId = tl_accId;
+    tl_accId = 0;
+    if (!accId) return;
     SetLocalAccId(accId);
     feat::FreeBuyOnSyncRefresh(accId);
 }
 
-static void OnBuyHeroLeave(void** a, void*) {
-    // IShowHandler_BuyHero(shopSlotIndex x1, m_ulAccountId x2, ...)
-    feat::FreeBuyOnBuyHero(static_cast<uint8_t>(reinterpret_cast<uintptr_t>(a[1])));
+// IShowHandler_BuyHero(shopSlotIndex x1, m_ulAccountId x2, ...)
+static void OnBuyHeroEnter(void** a) {
+    tl_slot = *reinterpret_cast<uint8_t*>(&a[1]);
+}
+static void OnBuyHeroLeave(void**, void*) {
+    uint8_t slot = tl_slot;
+    tl_slot = 0;
+    feat::FreeBuyOnBuyHero(slot);
 }
 
-static void OnBuyFailLeave(void** a, void*) {
-    // IShowHandler_BuyHeroFail(failTextId x1)
-    feat::FreeBuyOnBuyFail(static_cast<int32_t>(reinterpret_cast<intptr_t>(a[1])));
+// IShowHandler_BuyHeroFail(failTextId x1)
+static void OnBuyFailEnter(void** a) {
+    tl_failId = static_cast<int32_t>(reinterpret_cast<intptr_t>(a[1]));
+}
+static void OnBuyFailLeave(void**, void*) {
+    int32_t id = tl_failId;
+    tl_failId = 0;
+    feat::FreeBuyOnBuyFail(id);
 }
 
-static void OnCheckFreeLeave(void** a, void* ret) {
-    // CheckFreeBuyHero -> true: flag gratis baru dihitung -> rescan
+// CheckFreeBuyHero(this) -> bool
+static void OnCheckFreeEnter(void** a) { tl_pd = a[0]; }
+static void OnCheckFreeLeave(void**, void* ret) {
+    void* pd = tl_pd;
+    tl_pd = nullptr;
+    if (!pd) return;
     if (reinterpret_cast<uintptr_t>(ret) != 0)
-        feat::FreeBuyOnFreeChecked(a[0]);
+        feat::FreeBuyOnFreeChecked(pd);
 }
 
 // Frame tick: dipanggil tiap game membaca Time.get_deltaTime (banyak per frame).
@@ -359,17 +396,17 @@ void Init() {
 
     Class* kbdh = FindClass("", "MCBattleData"); // IShowHandler_* ada di MCBattleData
     if (kbdh) {
-        hook::Attach(MethodPtr(kbdh, "IShowHandler_RefreshShop", 5), nullptr,
+        hook::Attach(MethodPtr(kbdh, "IShowHandler_RefreshShop", 5), OnSyncRefreshEnter,
                      OnSyncRefreshLeave, "MCBattleData.IShowHandler_RefreshShop");
-        hook::Attach(MethodPtr(kbdh, "IShowHandler_BuyHero", 3), nullptr,
+        hook::Attach(MethodPtr(kbdh, "IShowHandler_BuyHero", 3), OnBuyHeroEnter,
                      OnBuyHeroLeave, "MCBattleData.IShowHandler_BuyHero");
-        hook::Attach(MethodPtr(kbdh, "IShowHandler_BuyHeroFail", 1), nullptr,
+        hook::Attach(MethodPtr(kbdh, "IShowHandler_BuyHeroFail", 1), OnBuyFailEnter,
                      OnBuyFailLeave, "MCBattleData.IShowHandler_BuyHeroFail");
     }
 
     if (kPd)
-        hook::Attach(MethodPtr(kPd, "CheckFreeBuyHero", 1), nullptr, OnCheckFreeLeave,
-                     "MCChessPlayerData.CheckFreeBuyHero");
+        hook::Attach(MethodPtr(kPd, "CheckFreeBuyHero", 1), OnCheckFreeEnter,
+                     OnCheckFreeLeave, "MCChessPlayerData.CheckFreeBuyHero");
 
     // Frame tick: Time.get_deltaTime ada di UnityEngine.CoreModule.dll (bukan
     // Assembly-CSharp) -> cari image-nya dulu.

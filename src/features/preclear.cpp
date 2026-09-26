@@ -151,12 +151,18 @@ static void Run(const char* reason) {
 
 // ---- dispatcher dari game.cpp ----
 void PreClearOnRefreshLeave(void* shop, bool isAuto) {
+    static int dbg = 0;
+    if (dbg < 5) {
+        dbg++;
+        LOGI("[SCAV] RefreshLeave shop=%p isAuto=%d preclear=%d", shop,
+             (int)isAuto, (int)cfg::t.preclear);
+    }
     if (!cfg::t.preclear) return;
     if (!isAuto) return;                 // hanya AUTO refresh awal round
-    if (!game::IsLocalShop(shop)) return;
+    if (!game::IsLocalShop(shop)) { LOGW("[SCAV] bukan shop lokal, dilewati"); return; }
     if (g_done) return;
     char sig[64];
-    if (!SigOf(shop, sig, sizeof(sig))) return;
+    if (!SigOf(shop, sig, sizeof(sig))) { LOGW("[SCAV] gagal baca isi shop"); return; }
     if (std::strcmp(sig, g_sig) == 0) return; // isi TIDAK berubah -> bukan refresh
     std::strncpy(g_sig, sig, sizeof(g_sig) - 1);
     g_armed = true;
