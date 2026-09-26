@@ -89,6 +89,13 @@ void SetLocalAccId(uint64_t accId) {
 
 bool InMatch() { return SelfLbm() != nullptr; }
 
+// Cache status match. Hook frame (Time.get_deltaTime) jalan ribuan kali per
+// detik pada thread game, jadi TIDAK BOLEH memanggil API il2cpp di sana.
+// Thread mod mengisi cache ini ~1x detik lewat PollInMatch(); hook hanya baca.
+static volatile bool g_inMatchCached = false;
+bool InMatchCached() { return g_inMatchCached; }
+void PollInMatch() { g_inMatchCached = InMatch(); }
+
 void* ShopLbm(void* shop) {
     if (!shop || !off_lbm) return nullptr;
     return il2::FieldGet<void*>(shop, off_lbm, nullptr);
@@ -317,7 +324,11 @@ static void OnFrame(void**) {
     if (g_inFrame) return;
     g_inFrame = true;
 
-    bool inMatch = InMatch();
+    // JANGAN panggil API il2cpp apa pun di dalam hook ini: OnFrame jalan
+    // BERIBAT kali per frame pada thread game. Panggilan il2cpp (FindClass /
+    // field_static_get_value) dari dalam hook -> crash pc=0x0 di liblogic.
+    // Status match di-cache oleh thread mod (PollInMatch) dan hanya dibaca di sini.
+    const bool inMatch = InMatchCached();
     if (g_wasInMatch && !inMatch) {       // transisi match -> lobby
         ResetMatchState();
         feat::PreClearOnMatchEnd();
@@ -326,9 +337,8 @@ static void OnFrame(void**) {
     }
     g_wasInMatch = inMatch;
 
-    // PENTING: frame handler hanya boleh jalan DI DALAM match. Di lobby/loading
-    // objek shop/player masih null -> feat::*Frame() dereference null ->
-    // SIGSEGV di UnityMain -> game restart terus (terbukti 26-09-2026).
+    // Frame handler hanya boleh jalan DI DALAM match. Di lobby/loading objek
+    // shop/player masih null -> feat::*Frame() dereference null -> SIGSEGV.
     if (inMatch) {
         feat::PreClearFrame();
         feat::FreeBuyFrame();
