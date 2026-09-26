@@ -36,6 +36,7 @@
 #include <time.h>
 #include <initializer_list>
 #include <sys/syscall.h>
+#include <sys/uio.h>
 
 #ifndef __NR_process_vm_readv
 #define __NR_process_vm_readv 270   // arm64
