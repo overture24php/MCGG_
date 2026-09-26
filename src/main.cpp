@@ -74,6 +74,7 @@ static void* MainThread(void*) {
     cfg::StartWatcher();
 
     // 5. pasang semua hook
+    LOGI("[INIT] mulai feat::InitAll");
     feat::InitAll();
     LOGI("=== semua hook terpasang ===");
 

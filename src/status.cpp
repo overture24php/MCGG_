@@ -12,8 +12,10 @@
 namespace status {
 
 void Update() {
+    static int counter = 0;
+    if (++counter % 5 == 1) LOGI("[STATUS] update #%d", counter);
     FILE* f = std::fopen("/sdcard/mcggmod_status.txt", "w");
-    if (!f) return;
+    if (!f) { LOGW("[STATUS] gagal buka status file"); return; }
 
     std::fprintf(f, "=== MCGG Mod Status ===\n");
     std::fprintf(f, "il2cpp_ready: %s\n", il2::CsImage() ? "YES" : "NO");

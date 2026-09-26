@@ -386,11 +386,17 @@ void Init() {
 
 namespace feat {
 void InitAll() {
+    LOGI("[INIT] InitAutoWin ...");
     InitAutoWin();
+    LOGI("[INIT] InitAutoStack ...");
     InitAutoStack();
+    LOGI("[INIT] InitPreClear ...");
     InitPreClear();
+    LOGI("[INIT] InitFreeBuy ...");
     InitFreeBuy();
+    LOGI("[INIT] game::Init ...");
     game::Init(); // hook bersama terakhir (dispatcher -> handler fitur di atas)
+    LOGI("[INIT] InitAll selesai");
 }
 } // namespace feat
 
