@@ -47,7 +47,7 @@ static const int32_t kOperRefresh = 91;
 // ==== state =================================================================
 static void*    g_shop = nullptr;
 static uint64_t g_localAccId = 0;
-static bool     g_wasInMatch = false;
+// (lihat OnFrame: gate ditentukan tiap fitur secara internal)
 
 // hero yang PERNAH terlihat berharga 1g di shop (filter Auto Stack; pengganti
 // tabel ShopDiag.HeroCost versi PC)
@@ -88,13 +88,6 @@ void SetLocalAccId(uint64_t accId) {
 }
 
 bool InMatch() { return SelfLbm() != nullptr; }
-
-// Cache status match. Hook frame (Time.get_deltaTime) jalan ribuan kali per
-// detik pada thread game, jadi TIDAK BOLEH memanggil API il2cpp di sana.
-// Thread mod mengisi cache ini ~1x detik lewat PollInMatch(); hook hanya baca.
-static volatile bool g_inMatchCached = false;
-bool InMatchCached() { return g_inMatchCached; }
-void PollInMatch() { g_inMatchCached = InMatch(); }
 
 void* ShopLbm(void* shop) {
     if (!shop || !off_lbm) return nullptr;
@@ -324,26 +317,17 @@ static void OnFrame(void**) {
     if (g_inFrame) return;
     g_inFrame = true;
 
-    // JANGAN panggil API il2cpp apa pun di dalam hook ini: OnFrame jalan
-    // BERIBAT kali per frame pada thread game. Panggilan il2cpp (FindClass /
-    // field_static_get_value) dari dalam hook -> crash pc=0x0 di liblogic.
-    // Status match di-cache oleh thread mod (PollInMatch) dan hanya dibaca di sini.
-    const bool inMatch = InMatchCached();
-    if (g_wasInMatch && !inMatch) {       // transisi match -> lobby
-        ResetMatchState();
-        feat::PreClearOnMatchEnd();
-        feat::FreeBuyOnMatchEnd();
-        feat::AutoStackOnMatchEnd();
-    }
-    g_wasInMatch = inMatch;
-
-    // Frame handler hanya boleh jalan DI DALAM match. Di lobby/loading objek
-    // shop/player masih null -> feat::*Frame() dereference null -> SIGSEGV.
-    if (inMatch) {
-        feat::PreClearFrame();
-        feat::FreeBuyFrame();
-        feat::AutoStackFrame();
-    }
+    // CATATAN PENTING (revert 13-09-2026):
+    // Hook frame ini berjalan ribuan kali/detik pada thread game. JANGAN pernah
+    // memanggil API il2cpp (FindClass / field_static_get_value) dari sini —
+    // itu memicu abort() di liblogic saat game masih initializing (restart
+    // loop). Cukup andalkan gate internal tiap fitur:
+    //   PreClearFrame -> return kalau !g_armed (hanya setelah auto-refresh)
+    //   FreeBuy/AutoStackFrame -> return kalau toggle-nya off
+    // Build yang memakai InMatch() di sini = game restart terus. reverted.
+    feat::PreClearFrame();
+    feat::FreeBuyFrame();
+    feat::AutoStackFrame();
 
     g_inFrame = false;
 }

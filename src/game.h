@@ -23,8 +23,6 @@ uint64_t LocalAccIdStable();    // cached accId lokal
 void   SetLocalAccId(uint64_t accId); // hanya terima kalau cocok m_SelfAccID
 void*  SelfLbm();               // MCLogicBattleData.m_SelfLogicBattleManager
 bool   InMatch();
-bool   InMatchCached();        // cache InMatch(), aman dipanggil dari hook frame
-void   PollInMatch();          // panggil ~1x detik dari thread mod
 uint32_t CurRound();            // Battle.MCLogicUtils.GetCurRound()
 int    RefreshCost(void* shop); // shop.refreshShopCost (fallback 2)
 void*  LbmPlayerData(void* lbm);// lbm.get_m_PlayerData() (konteks vs pemain lokal)

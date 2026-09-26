@@ -85,7 +85,6 @@ static void* MainThread(void*) {
     //    supaya tidak nabrak GC saat boot.
     int  status_tick  = 0;
     int  attach_try   = 0;
-    int  inmatch_tick = 0;
     for (;;) {
         // attach (idempoten; ScopedThread dipegang di variabel agar hidup
         // selama thread) lalu pasang hook sekali.
@@ -115,9 +114,6 @@ static void* MainThread(void*) {
         // update status file tiap ~1 detik
         if (++status_tick >= 2) {
             status_tick = 0;
-            // cache status match untuk hook frame (panggilan il2cpp HARUS di
-            // thread mod, bukan di dalam hook pada thread game)
-            if (++inmatch_tick % 2 == 0) game::PollInMatch();
             status::Update();
         }
 
