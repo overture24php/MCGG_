@@ -20,6 +20,7 @@
 #include <unistd.h>
 #include <ctime>
 #include <cstdio>
+#include <cstring>
 
 static void WriteStatus(const char* step) {
     // identitas proses: provider jalan di 2 proses (main + :UnityKillsMe),
@@ -31,7 +32,13 @@ static void WriteStatus(const char* step) {
         proc[n] = 0;
         std::fclose(c);
     }
-    FILE* f = std::fopen("/sdcard/mcggmod_status.txt", "w");
+    // Proses game (":" di cmdline, mis. :UnityKillsMe) pemilik file status utama;
+    // proses shell/extractor menulis file sendiri supaya status game tidak
+    // ketimpa FAILED dari proses yang memang tidak memuat il2cpp.
+    const char* status_path = std::strchr(proc, ':')
+        ? "/sdcard/mcggmod_status.txt"
+        : "/sdcard/mcggmod_status_shell.txt";
+    FILE* f = std::fopen(status_path, "w");
     if (f) {
         std::fprintf(f, "step: %s\n", step);
         std::fprintf(f, "proc: %s\n", proc);
@@ -47,7 +54,7 @@ static void* MainThread(void*) {
 
     // 1. tunggu il2cpp + metadata benar-benar siap (packer)
     WriteStatus("waiting_for_il2cpp");
-    if (!il2::Wait(120000)) {
+    if (!il2::Wait(300000)) {   // boot pertama: packer+unpack il2cpp bisa > 2 menit
         LOGE("il2cpp tidak siap, mod berhenti");
         WriteStatus("FAILED_il2cpp_not_ready");
         return nullptr;

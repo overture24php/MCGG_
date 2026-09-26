@@ -1,12 +1,24 @@
 // ---------------------------------------------------------------------------
-// Implementasi resolver IL2CPP.
-// Tidak ada il2cpp_* yang di-link. APK game ini DIPAK:
-//   - stub libil2cpp.so mengekspor thunk il2cpp_* (16 byte) + variabel gate
-//     m_il2cpp_*_ptr yang diisi unpacker dengan alamat fungsi asli;
-//   - lib asli (155 MB, mis. app_libs/liblogic.so) muncul di /proc/self/maps
-//     dengan nama/mekanisme apa pun (rename, memfd, apk!/lib/...).
-// Karena itu modul ditemukan lewat scan maps + parse ELF manual (GNU hash),
-// bukan dlsym by soname — pendekatan yang sama dengan libTool (mlsmanXP).
+// Implementasi resolver IL2CPP (v3).
+//
+// PELAJARAN v2 (sigsetjmp "guard"): longjmp keluar dari tengah malloc/stdio saat
+// packer mencabut halaman modul => thread mod wedged (trace berhenti total,
+// status nyangkut "waiting_for_il2cpp"). v3: TIDAK ADA handler sinyal. Semua
+// baca memori lewat process_vm_readv (gagal = EFAULT, bukan SIGSEGV).
+//
+// Fakta APK v1.2.98.3143 (terverifikasi di HP, 26-09-2026):
+//   - libil2cpp.so = STUB 384 KB: export 243 gate m_il2cpp_*_ptr + thunk 16-byte
+//     il2cpp_*; gate TIDAK PERNAH diisi packer versi ini -> penyebab "resolve
+//     GAGAL" berulang di v2 (gate selalu null).
+//   - il2cpp ASLI di-unpack ke /data/data/<pkg>/app_libs/liblogic.so (162 MB,
+//     file nyata milik uid app) lalu di-mmap packer (custom loader, bukan linker).
+//     File itu mengekspor il2cpp_* LANGSUNG tanpa gate.
+// Urutan sumber symbol di v3:
+//   1) dlopen(NOLOAD)+dlsym  -> benar kalau linker masih mengenal lib asli;
+//   2) FILE app_libs/liblogic.so -> parse ELF dari FILE (pread, bebas fault),
+//      base runtime dicari di /proc/self/maps;
+//   3) gate m_<nama>_ptr dari modul di memori (kalau packer mengisinya);
+//   4) symbol langsung di modul memori (lib asli kalau ter-mapping terpisah).
 // ---------------------------------------------------------------------------
 #include "il2cpp.h"
 #include "log.h"
@@ -17,37 +29,90 @@
 #include <cstdarg>
 #include <string>
 #include <vector>
+#include <utility>
 #include <unistd.h>
+#include <fcntl.h>
 #include <elf.h>
+#include <time.h>
 #include <initializer_list>
-#include <signal.h>
-#include <setjmp.h>
 #include <sys/syscall.h>
+
+#ifndef __NR_process_vm_readv
+#define __NR_process_vm_readv 270   // arm64
+#endif
 
 namespace il2 {
 
 Api api{};
-static void*  g_handle = nullptr;   // pin handle dlopen (boleh null kalau sumber dari maps)
+static void*  g_handle = nullptr;   // handle dlopen (pin + sumber dlsym)
 static Image* g_cs     = nullptr;
 
-// ---------------------------------------------------------------------------
-// Trace diagnostik discovery: logcat (tag MCGGMOD) + file /sdcard/mcggmod_il2.txt
-// supaya kegagalan bisa dianalisis walau buffer logcat sudah ke-rotate.
-// ---------------------------------------------------------------------------
+static long NowMs() {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+// Baca memori proses sendiri TANPA bisa crash (EFAULT, bukan SIGSEGV).
+static bool MemRead(uintptr_t addr, void* dst, size_t n) {
+    struct iovec loc { dst, n };
+    struct iovec rem { reinterpret_cast<void*>(addr), n };
+    long r = syscall(__NR_process_vm_readv, (long)getpid(), &loc, 1L, &rem, 1L, 0L);
+    return r == (long)n;
+}
+
+// ---- identitas proses (nama file trace) ----
+static const char* ProcName() {
+    static char buf[128] = "?";
+    static bool done = false;
+    if (!done) {
+        done = true;
+        int fd = open("/proc/self/cmdline", O_RDONLY);
+        if (fd >= 0) {
+            ssize_t n = read(fd, buf, sizeof(buf) - 1);
+            if (n > 0) {
+                buf[n] = 0;
+                for (ssize_t i = 0; i < n; i++) if (buf[i] == 0) buf[i] = ' ';
+            }
+            close(fd);
+        }
+    }
+    return buf;
+}
+static const char* PkgName() {                       // cmdline tanpa ":suffix"
+    static char buf[128] = {0};
+    static bool done = false;
+    if (!done) {
+        done = true;
+        std::snprintf(buf, sizeof(buf), "%s", ProcName());
+        if (char* c = std::strchr(buf, ':')) *c = 0;
+        if (char* c = std::strchr(buf, ' ')) *c = 0;
+    }
+    return buf;
+}
+
+// Trace: logcat + file app-private (ext4, cepat). Prefix [pid t=ms] supaya dua
+// proses (:UnityKillsMe vs shell/extractor) tidak tertukar saat file dibaca.
 static void Trace(const char* fmt, ...) {
-    char buf[512];
+    char msg[400];
     va_list ap;
     va_start(ap, fmt);
-    std::vsnprintf(buf, sizeof(buf), fmt, ap);
+    std::vsnprintf(msg, sizeof(msg), fmt, ap);
     va_end(ap);
-    LOGI("%s", buf);
-    FILE* f = std::fopen("/sdcard/mcggmod_il2.txt", "a");
-    if (f) { std::fprintf(f, "%s\n", buf); std::fclose(f); }
+    static long t0 = NowMs();
+    char line[480];
+    std::snprintf(line, sizeof(line), "[%d t=%ld] %s", (int)getpid(), NowMs() - t0, msg);
+    LOGI("%s", line);
+    char path[200];
+    std::snprintf(path, sizeof(path), "/data/data/%s/files/mcggmod_il2_%d.txt",
+                  PkgName(), (int)getpid());
+    FILE* f = std::fopen(path, "a");
+    if (f) { std::fprintf(f, "%s\n", line); std::fclose(f); }
 }
 
 // log hanya saat pesan berubah (anti-spam di loop polling)
 static void TraceState(const char* msg) {
-    static char last[160] = {0};
+    static char last[224] = {0};
     if (std::strcmp(last, msg) == 0) return;
     std::strncpy(last, msg, sizeof(last) - 1);
     last[sizeof(last) - 1] = 0;
@@ -55,272 +120,368 @@ static void TraceState(const char* msg) {
 }
 
 // ---------------------------------------------------------------------------
-// Parser ELF manual by-memory (name-agnostic): parse ELF header + PT_DYNAMIC
-// + GNU hash langsung dari alamat base modul di /proc/self/maps. Tidak peduli
-// lib di-rename / di-load dari memfd / file-nya sudah (deleted) — pola packer.
-// Pendekatan setara libTool (mlsmanXP) yang memakai solist linker + do_dlsym.
+// Pembaca dynsym ELF v3. SENGAJA tanpa GNU hash: dynsym il2cpp kecil (validator:
+// liblogic.so = 2.837 symbol, stub = 1.084 symbol) -> salin sekali lalu scan
+// linear. Dua sumber baca:
+//   - FILE   (app_libs/liblogic.so): pread per-offset, sama sekali bebas fault;
+//   - MEMORI (modul di /proc/self/maps): process_vm_readv (EFAULT, bukan SEGV).
 // ---------------------------------------------------------------------------
-struct ModSyms {
-    uintptr_t base = 0;
-    const Elf64_Sym* symtab = nullptr;
-    const char* strtab = nullptr;
-    const uint32_t* buckets = nullptr;
-    const uint32_t* chain = nullptr;
-    uint32_t nbuckets = 0;
-    uint32_t symoffset = 0;
-    uint32_t nchain = 0;    // dari DT_HASH kalau ada; 0 = tidak diketahui
-    std::string path;       // path di /proc/self/maps (diagnostik)
+struct ElfMod {
+    bool        in_file = false;
+    int         fd = -1;
+    uintptr_t   base = 0;        // mem: base langsung; file: diisi dari maps
+    std::string path;
+
+    struct Seg { uint64_t off, vaddr, filesz; };
+    std::vector<Seg>       loads;   // PT_LOAD (konversi vaddr -> offset file)
+    std::vector<Elf64_Sym> syms;    // salinan dynsym
+    std::vector<char>      strtab;  // salinan dynstr (selalu diakhiri NUL)
+
     bool ok = false;
+    bool has_gate_var = false;      // punya export m_il2cpp_domain_get_ptr (stub)
 };
 
-static bool ParseModule(uintptr_t base, ModSyms& m) {
-    const auto* eh = reinterpret_cast<const Elf64_Ehdr*>(base);
-    if (eh->e_ident[EI_MAG0] != ELFMAG0 || eh->e_ident[EI_MAG1] != ELFMAG1 ||
-        eh->e_ident[EI_MAG2] != ELFMAG2 || eh->e_ident[EI_MAG3] != ELFMAG3)
-        return false;
-    if (eh->e_ident[EI_CLASS] != ELFCLASS64) return false;
-    if (eh->e_phoff == 0 || eh->e_phoff > 0x10000 || eh->e_phnum == 0 || eh->e_phnum > 64)
-        return false;
-    const auto* ph = reinterpret_cast<const Elf64_Phdr*>(base + eh->e_phoff);
-    const Elf64_Dyn* dyn = nullptr;
-    for (int i = 0; i < eh->e_phnum; i++) {
-        if (ph[i].p_type == PT_DYNAMIC) {
-            dyn = reinterpret_cast<const Elf64_Dyn*>(base + ph[i].p_vaddr);
-            break;
+// Baca `n` byte dari vaddr modul (file: pread; memori: process_vm_readv).
+static bool ReadV(const ElfMod& m, uint64_t vaddr, void* dst, size_t n) {
+    size_t got = 0;
+    char* out = static_cast<char*>(dst);
+    while (got < n) {
+        uint64_t v = vaddr + got;
+        if (m.in_file) {
+            uint64_t off = 0, room = 0;
+            for (const auto& s : m.loads) {
+                if (v >= s.vaddr && v < s.vaddr + s.filesz) {
+                    off  = s.off + (v - s.vaddr);
+                    room = s.vaddr + s.filesz - v;
+                    break;
+                }
+            }
+            if (!room) return false;
+            size_t chunk = (n - got < room) ? (n - got) : (size_t)room;
+            ssize_t r = pread(m.fd, out + got, chunk, (off_t)off);
+            if (r <= 0) return false;
+            got += (size_t)r;
+        } else {
+            size_t chunk = (n - got < 4096) ? (n - got) : 4096;
+            if (!MemRead(m.base + v, out + got, chunk)) return false;
+            got += chunk;
         }
     }
-    if (!dyn) return false;
-    const uint32_t* gnu = nullptr;
-    for (const Elf64_Dyn* d = dyn; d->d_tag != DT_NULL; d++) {
-        if      (d->d_tag == DT_SYMTAB)   m.symtab = reinterpret_cast<const Elf64_Sym*>(base + d->d_un.d_ptr);
-        else if (d->d_tag == DT_STRTAB)   m.strtab = reinterpret_cast<const char*>(base + d->d_un.d_ptr);
-        else if (d->d_tag == DT_GNU_HASH) gnu = reinterpret_cast<const uint32_t*>(base + d->d_un.d_ptr);
-        else if (d->d_tag == DT_HASH)     m.nchain = reinterpret_cast<const uint32_t*>(base + d->d_un.d_ptr)[1];
+    return true;
+}
+
+// Baca pointer 8 byte di vaddr modul (gate m_<nama>_ptr pola stub).
+static bool ReadPtrAt(const ElfMod& m, uint64_t vaddr, void** out) {
+    uintptr_t p = 0;
+    if (!ReadV(m, vaddr, &p, sizeof(p))) return false;
+    *out = reinterpret_cast<void*>(p);
+    return true;
+}
+
+// Muat header + PT_LOAD/PT_DYNAMIC + salin dynsym & dynstr ke buffer sendiri.
+// Setelah ini modul tidak disentuh lagi (aman walau packer me-remap halamannya).
+static bool ElfLoad(ElfMod& m) {
+    Elf64_Ehdr eh{};
+    if (m.in_file) {
+        if (pread(m.fd, &eh, sizeof(eh), 0) != (ssize_t)sizeof(eh)) return false;
+    } else {
+        if (!MemRead(m.base, &eh, sizeof(eh))) return false;
     }
-    if (!m.symtab || !m.strtab || !gnu) return false;
-    m.nbuckets  = gnu[0];
-    m.symoffset = gnu[1];
-    uint32_t bloom_size = gnu[2];
-    if (m.nbuckets == 0 || m.nbuckets > (1u << 24)) return false;
-    m.buckets = gnu + 4 + (bloom_size * 2);   // bloom filter = bloom_size * uint64
-    m.chain   = m.buckets + m.nbuckets;
-    m.base = base;
+    if (std::memcmp(eh.e_ident, ELFMAG, 4) != 0) return false;
+    if (eh.e_ident[EI_CLASS] != ELFCLASS64) return false;
+    if (!eh.e_phoff || !eh.e_phnum || eh.e_phnum > 512) return false;
+
+    std::vector<Elf64_Phdr> ph(eh.e_phnum);
+    const size_t ph_bytes = ph.size() * sizeof(Elf64_Phdr);
+    if (m.in_file) {
+        if (pread(m.fd, ph.data(), ph_bytes, (off_t)eh.e_phoff) != (ssize_t)ph_bytes)
+            return false;
+    } else {
+        if (!MemRead(m.base + eh.e_phoff, ph.data(), ph_bytes)) return false;
+    }
+
+    uint64_t dyn_v = 0, dyn_sz = 0, gnu_v = 0;
+    for (const auto& p : ph) {
+        if (p.p_type == PT_LOAD && p.p_filesz)
+            m.loads.push_back({p.p_offset, p.p_vaddr, p.p_filesz});
+        if (p.p_type == PT_DYNAMIC && !dyn_v) { dyn_v = p.p_vaddr; dyn_sz = p.p_filesz; }
+    }
+    if (!dyn_v || m.loads.empty()) return false;
+    if (dyn_sz == 0 || dyn_sz > 0x10000) dyn_sz = 0x10000;
+
+    std::vector<Elf64_Dyn> dyn((size_t)(dyn_sz / sizeof(Elf64_Dyn)));
+    if (!ReadV(m, dyn_v, dyn.data(), dyn.size() * sizeof(Elf64_Dyn))) return false;
+
+    uint64_t sym_v = 0, str_v = 0, strsz = 0, hash_v = 0;
+    for (const auto& d : dyn) {
+        if (d.d_tag == DT_NULL) break;
+        if      (d.d_tag == DT_SYMTAB)   sym_v  = d.d_un.d_ptr;
+        else if (d.d_tag == DT_STRTAB)   str_v  = d.d_un.d_ptr;
+        else if (d.d_tag == DT_STRSZ)    strsz  = d.d_un.d_ptr;
+        else if (d.d_tag == DT_HASH)     hash_v = d.d_un.d_ptr;
+        else if (d.d_tag == DT_GNU_HASH) gnu_v  = d.d_un.d_ptr;
+    }
+    if (!sym_v || !str_v) return false;
+
+    uint32_t count = 0;
+    if (hash_v) {                       // DT_HASH -> nchain = jumlah symbol
+        uint32_t nh[2] = {0, 0};
+        if (ReadV(m, hash_v, nh, sizeof(nh))) count = nh[1];
+    }
+    if (!count && gnu_v) {              // turunkan batas jumlah symbol dari GNU hash
+        uint32_t gh[4] = {0, 0, 0, 0};
+        if (ReadV(m, gnu_v, gh, sizeof(gh)) && gh[0] && gh[0] <= 0x10000) {
+            uint64_t buckets_v = gnu_v + 16 + (uint64_t)gh[2] * 8;
+            std::vector<uint32_t> bk(gh[0]);
+            if (ReadV(m, buckets_v, bk.data(), bk.size() * 4)) {
+                uint32_t mx = 0;
+                for (uint32_t b : bk) if (b > mx) mx = b;
+                if (mx >= gh[1]) {
+                    for (uint32_t idx = mx, hops = 0; hops < 0x40000; idx++, hops++) {
+                        uint32_t w = 0;
+                        if (!ReadV(m, buckets_v + (uint64_t)gh[0] * 4 +
+                                          (uint64_t)(idx - gh[1]) * 4, &w, 4)) break;
+                        if (w & 1) { count = idx + 1; break; }
+                    }
+                }
+            }
+        }
+    }
+    if (!count && str_v > sym_v)
+        count = (uint32_t)((str_v - sym_v) / sizeof(Elf64_Sym));
+    if (!count || count > 0x40000) count = 0x40000;    // batas aman
+
+    if (!strsz || strsz > (2u << 20)) strsz = 1u << 20;
+
+    // Baca dynsym; kalau range-nya menyentuh halaman tak terpetakan (memori),
+    // perkecil sampai berhasil (tidak pernah crash: ReadV aman).
+    m.syms.resize(count);
+    size_t want = m.syms.size();
+    while (want > 64 && !ReadV(m, sym_v, m.syms.data(), want * sizeof(Elf64_Sym)))
+        want /= 2;
+    if (want <= 64) return false;
+    m.syms.resize(want);
+
+    m.strtab.resize((size_t)strsz + 1);
+    size_t swant = (size_t)strsz;
+    while (swant > 256 && !ReadV(m, str_v, m.strtab.data(), swant)) swant /= 2;
+    if (swant <= 256) return false;
+    m.strtab.resize(swant + 1);
+    m.strtab[swant] = 0;
+
     m.ok = true;
     return true;
 }
 
-static uint32_t GnuHash(const char* s) {
-    uint32_t h = 5381;
-    for (; *s; s++) h = h * 33 + static_cast<uint8_t>(*s);
-    return h;
-}
-
-static void* ModLookup(const ModSyms& m, const char* name) {
-    if (!m.ok) return nullptr;
-    uint32_t h = GnuHash(name);
-    uint32_t i = m.buckets[h % m.nbuckets];
-    if (i < m.symoffset) return nullptr;
-    uint32_t maxChain = m.nchain ? (m.nchain - m.symoffset) : (1u << 22);
-    for (uint32_t guard = 0; guard < maxChain; i++, guard++) {
-        uint32_t hi = m.chain[i - m.symoffset];
-        const Elf64_Sym& s = m.symtab[i];
-        if (s.st_shndx != 0 && (hi | 1) == (h | 1) &&
-            std::strcmp(m.strtab + s.st_name, name) == 0)
-            return reinterpret_cast<void*>(m.base + s.st_value);
-        if (hi & 1) break;
+// Cari symbol DEFINED by nama (scan linear; tabelnya kecil, sekali muat).
+static bool FindSym(const ElfMod& m, const char* name, uint64_t* val) {
+    if (!m.ok) return false;
+    for (const auto& s : m.syms) {
+        if (!s.st_shndx || !s.st_name || s.st_name >= m.strtab.size()) continue;
+        if (std::strcmp(&m.strtab[s.st_name], name) == 0) {
+            if (val) *val = s.st_value;
+            return true;
+        }
     }
-    return nullptr;
-}
-
-static std::vector<ModSyms> g_mods;   // SEMUA modul yang mengekspor il2cpp:
-                                      // stub gate libil2cpp.so + lib asli (hasil unpack)
-static bool g_api_ok = false;         // true setelah ResolveAll() lengkap
-
-// ---------------------------------------------------------------------------
-// Guard SIGSEGV/SIGBUS untuk pembacaan modul.
-// Packer (ByteDance: libnpth/libshadowhook/libEncryptor) mem-map/unmap/mprotect
-// modul sambil unpack — probe & resolve bisa menyentuh halaman yang baru
-// dicabut izinnya. Bukti: tombstone SEGV_ACCERR, pc di il2::Wait+1720.
-// Pola: sigsetjmp -> fault = "gagal baca", lanjut; HANYA thread kita yang
-// di-longjmp; crash thread lain tetap diteruskan ke handler sebelumnya.
-// ---------------------------------------------------------------------------
-static sigjmp_buf g_jmp;
-static volatile sig_atomic_t g_guard_on = 0;
-static long g_guard_tid = 0;
-static struct sigaction g_prev_segv;
-static struct sigaction g_prev_bus;
-static int g_guard_hits = 0;
-
-static void GuardHandler(int sig, siginfo_t*, void*) {
-    long me = (long)syscall(SYS_gettid);
-    if (g_guard_on && me == g_guard_tid) siglongjmp(g_jmp, 1);
-    if (sig == SIGSEGV) sigaction(SIGSEGV, &g_prev_segv, nullptr);
-    else                sigaction(SIGBUS,  &g_prev_bus,  nullptr);
-    raise(sig);
-}
-
-static void GuardInstall() {
-    static bool done = false;
-    if (done) return;
-    done = true;
-    struct sigaction sa;
-    std::memset(&sa, 0, sizeof(sa));
-    sa.sa_sigaction = GuardHandler;
-    sa.sa_flags = SA_SIGINFO;
-    sigemptyset(&sa.sa_mask);
-    sigaction(SIGSEGV, &sa, &g_prev_segv);
-    sigaction(SIGBUS,  &sa, &g_prev_bus);
-}
-
-static bool GuardBegin() {
-    g_guard_tid = (long)syscall(SYS_gettid);
-    g_guard_on = 1;
-    if (sigsetjmp(g_jmp, 1) == 0) return true;
-    g_guard_hits++;
     return false;
 }
-static void GuardEnd() { g_guard_on = 0; }
 
-#define GUARD_TRY if (GuardBegin())
-#define GUARD_END GuardEnd();
+static std::vector<ElfMod> g_mods;    // semua sumber symbol yang ditemukan
+static bool g_api_ok = false;         // true setelah ResolveAll() lengkap
 
-// path sudah pernah di-trace? (anti-spam saat polling maps)
+// Range executable dari maps terakhir (validasi hasil resolve).
+static std::vector<std::pair<uintptr_t, uintptr_t>> g_exec;
+static bool IsExecAddr(uintptr_t a) {
+    for (const auto& r : g_exec) if (a >= r.first && a < r.second) return true;
+    return false;
+}
+
+// ---------------------------------------------------------------------------
+// Discovery sumber symbol:
+//   A. FILE app_libs/liblogic.so — il2cpp asli hasil unpack (paling diandalkan);
+//   B. dlopen(NOLOAD)+dlsym   — bila linker masih mengenal lib aslinya;
+//   C. modul di /proc/self/maps — pola umum (stub / lib lain / mapping anonim).
+// ---------------------------------------------------------------------------
+static bool AddFileMod(const char* path) {
+    for (const auto& e : g_mods)
+        if (e.in_file && e.path == path) return true;   // sudah ada
+    ElfMod m;
+    m.in_file = true;
+    m.path = path;
+    m.fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (m.fd < 0) return false;
+    if (!ElfLoad(m)) {
+        close(m.fd);
+        return false;
+    }
+    m.has_gate_var = FindSym(m, "m_il2cpp_domain_get_ptr", nullptr);
+    const bool direct = FindSym(m, "il2cpp_domain_get", nullptr);
+    if (!direct && !m.has_gate_var) {
+        close(m.fd);
+        return false;
+    }
+    Trace("modul FILE: %s (%zu symbol, direct=%d gate=%d) — base menyusul dari maps",
+          path, m.syms.size(), (int)direct, (int)m.has_gate_var);
+    g_mods.push_back(std::move(m));
+    return true;
+}
+
+static bool AddMemMod(uintptr_t base, const char* path) {
+    for (const auto& e : g_mods)
+        if (!e.in_file && e.base == base) return true;  // sudah pernah diprobe
+    ElfMod m;
+    m.base = base;
+    m.path = path ? path : "";
+    if (!ElfLoad(m)) return false;
+    m.has_gate_var = FindSym(m, "m_il2cpp_domain_get_ptr", nullptr);
+    const bool direct = FindSym(m, "il2cpp_domain_get", nullptr);
+    if (!direct && !m.has_gate_var) return false;
+    Trace("modul MAP: base=%p gate=%d direct=%d path=%s",
+          (void*)base, (int)m.has_gate_var, (int)direct,
+          (path && *path) ? path : "(anon)");
+    g_mods.push_back(std::move(m));
+    return true;
+}
+
+// dlopen(NOLOAD) saja — JANGAN memicu load baru (lib 162 MB; hindari init ganda).
+// Handle diterima HANYA kalau bukan pola stub (tanpa gate m_il2cpp_domain_get_ptr):
+// thunk stub belum terisi sampai packer selesai -> memakainya = crash.
+static void TryDlopenOnce() {
+    static int tries = 0;
+    if (g_handle || tries >= 40) return;
+    tries++;
+    static std::string p[4];
+    p[0] = std::string("/data/data/") + PkgName() + "/app_libs/liblogic.so";
+    p[1] = std::string("/data/user/0/") + PkgName() + "/app_libs/liblogic.so";
+    p[2] = std::string("/data/data/") + PkgName() + "/app_libs/libil2cpp.so";
+    p[3] = std::string("/data/user/0/") + PkgName() + "/app_libs/libil2cpp.so";
+    const char* cands[6] = {"liblogic.so", "libil2cpp.so",
+                            p[0].c_str(), p[1].c_str(), p[2].c_str(), p[3].c_str()};
+    for (const char* c : cands) {
+        void* h = dlopen(c, RTLD_NOLOAD | RTLD_NOW);
+        if (!h) continue;
+        if (dlsym(h, "m_il2cpp_domain_get_ptr")) continue;   // itu stub (gate)
+        if (!dlsym(h, "il2cpp_domain_get")) continue;
+        g_handle = h;
+        Trace("dlopen NOLOAD OK: %s (dlsym jadi sumber utama)", c);
+        return;
+    }
+}
+
+// path sudah pernah diprobe? (anti-spam saat polling maps)
 static bool SeenPath(const char* p) {
     static std::vector<std::string> seen;
-    for (size_t i = 0; i < seen.size(); i++)
-        if (seen[i] == p) return true;
+    for (const auto& s : seen) if (s == p) return true;
     seen.push_back(p);
     return false;
 }
 
-// Hanya modul relevan yang diprobe: lib dari /data (termasuk apk!/lib/...),
-// memfd, file (deleted), dan mapping anonim (hasil unpack biasanya anonim).
-// /system, /apex, /vendor, /dev dst dilewati -> jauh lebih sedikit sentuhan.
+// Hanya modul relevan: /data (termasuk app_libs & apk!/lib/...), memfd, file
+// (deleted). /system, /apex, /vendor, /dev dst tidak pernah memuat il2cpp.
 static bool RelevantPath(const char* p) {
-    if (!p || !*p) return true;
-    if (std::strstr(p, "memfd") || std::strstr(p, "(deleted)")) return true;
+    if (!p || !*p) return false;
+    if (std::strstr(p, "/memfd:") || std::strstr(p, "(deleted)")) return true;
     return std::strncmp(p, "/data/", 6) == 0;
 }
 
-// Uji satu kandidat base dari maps. Kandidat valid kalau punya gate
-// m_il2cpp_*_ptr (pola stub Moonton) atau thunk il2cpp_* (Unity asli).
-static bool ProbeModuleRaw(uintptr_t base, const char* path) {
-    for (size_t i = 0; i < g_mods.size(); i++)
-        if (g_mods[i].base == base) return false;
-    ModSyms m;
-    if (!ParseModule(base, m)) return false;
-    const bool gate   = ModLookup(m, "m_il2cpp_domain_get_ptr") != nullptr;
-    const bool direct = ModLookup(m, "il2cpp_domain_get") != nullptr;
-    if (!gate && !direct) return false;
-    m.path = path ? path : "";
-    g_mods.push_back(m);
-    Trace("modul il2cpp: base=%p gate=%d direct=%d path=%s",
-          (void*)base, (int)gate, (int)direct, path ? path : "?");
-    return true;
-}
-
-// versi ber-guard: halaman modul bisa dicabut packer saat kita membacanya
-static bool ProbeModule(uintptr_t base, const char* path) {
-    bool ok = false;
-    GUARD_TRY { ok = ProbeModuleRaw(base, path); } GUARD_END
-    return ok;
-}
-
-// Scan /proc/self/maps — teknik libTool (mlsmanXP): TIDAK bergantung nama
-// file / namespace linker. Lib boleh di-rename, sudah (deleted), atau
-// di-load dari memfd / apk!/lib/... — semua kelihatan di maps.
-static void ScanMapsOnce() {
-    // sekali saja (non-fatal): pin handle kalau linker masih mengenali soname
-    // supaya lib tidak di-unload. NOLOAD = jangan memicu load baru.
-    static bool pin_done = false;
-    if (!pin_done) {
-        pin_done = true;
-        const char* names[] = {"libil2cpp.so", "liblogic.so", "libunity.so"};
-        for (const char* n : names) {
-            void* h = dlopen(n, RTLD_NOLOAD | RTLD_NOW);
-            if (h) { g_handle = h; Trace("dlopen NOLOAD ok: %s", n); }
-        }
-        // path hasil unpacker: /data/user/0/<pkg>/app_libs/... (NOLOAD saja)
-        char pkg[128] = {0};
-        FILE* cf = std::fopen("/proc/self/cmdline", "r");
-        if (cf) {
-            if (std::fread(pkg, 1, sizeof(pkg) - 1, cf) == 0) pkg[0] = 0;
-            std::fclose(cf);
-        }
-        if (char* c = std::strchr(pkg, ':')) *c = 0;
-        if (pkg[0]) {
-            const char* libs[] = {"liblogic.so", "libil2cpp.so", "libunity.so"};
-            for (const char* ln : libs) {
-                std::string p = std::string("/data/user/0/") + pkg + "/app_libs/" + ln;
-                void* h = dlopen(p.c_str(), RTLD_NOLOAD | RTLD_NOW);
-                if (h) { g_handle = h; Trace("dlopen NOLOAD ok: %s", p.c_str()); }
+// Base runtime modul FILE (liblogic di app_libs): mapping pertama (offset 0)
+// dengan path yang cocok. Dipanggil tiap scan supaya base ikut pindah kalau
+// packer me-remap.
+static bool MatchFileBase(const char* map_path, uintptr_t start) {
+    const char* suf = std::strstr(map_path, "/app_libs/");
+    if (!suf) return false;
+    for (auto& m : g_mods) {
+        if (!m.in_file) continue;
+        if (std::strstr(m.path.c_str(), suf)) {
+            if (m.base != start) {
+                m.base = start;
+                Trace("base %s = %p (dari maps)", suf, (void*)start);
             }
+            return true;
         }
     }
+    return false;
+}
 
+// Scan /proc/self/maps: base modul FILE + probe modul memori yang belum dikenal.
+static void ScanMaps() {
     FILE* f = std::fopen("/proc/self/maps", "r");
     if (!f) { Trace("maps tidak terbuka"); return; }
+    g_exec.clear();
     char line[768];
     while (std::fgets(line, sizeof(line), f)) {
         uintptr_t start = 0, end = 0, off = 0;
         char perms[8] = {0};
         if (std::sscanf(line, "%lx-%lx %7s %lx", &start, &end, perms, &off) != 4) continue;
-        if (off != 0 || perms[0] != 'r') continue;   // hanya segmen pertama (header ELF)
+        if (perms[2] == 'x' && g_exec.size() < 1024)
+            g_exec.push_back(std::make_pair(start, end));
+        if (off != 0) continue;                      // hanya awal modul (header ELF)
         char* path = std::strchr(line, '/');
         if (path) { char* nl = std::strchr(path, '\n'); if (nl) *nl = 0; }
+        if (path && MatchFileBase(path, start)) continue;
         if (path && !RelevantPath(path)) continue;   // /system, /apex, /dev, ...
-        if (path && (std::strstr(path, "liblogic") || std::strstr(path, "libil2cpp") ||
-                     std::strstr(path, "libResources") || std::strstr(path, "memfd") ||
-                     std::strstr(path, "apk!") || std::strstr(path, "libunity"))) {
-            if (!SeenPath(path)) Trace("maps kandidat: %s base=%p", path, (void*)start);
-        }
-        ProbeModule(start, path);
+        if (!path && perms[2] != 'x') continue;      // anonim: hanya kalau exec
+        if (path && SeenPath(path)) continue;
+        AddMemMod(start, path);
     }
     std::fclose(f);
 }
 
-// Resolver tunggal untuk RESOLVE().
-// 1) gate m_<nama>_ptr / m_<nama> (variabel 8 byte yang diisi unpacker)
-//    -> kalau terisi, isinya alamat fungsi asli.
-// 2) direct/thunk il2cpp_* HANYA dari modul yang tidak punya gate itu
-//    (lib asli hasil unpack biasanya diekspor langsung).
-// Gate ada tapi masih null = belum siap -> return null, Wait() mengulang.
-// Tanpa alokasi heap + dibungkus guard (aman menyentuh modul yang di-remap).
-static void* SymRaw(const char* s) {
-    char g1[80], g2[80];
-    std::snprintf(g1, sizeof(g1), "m_%s_ptr", s);
-    std::snprintf(g2, sizeof(g2), "m_%s", s);
-    const char* gates[2] = {g1, g2};
-    for (size_t i = 0; i < g_mods.size(); i++) {
-        if (!g_mods[i].ok) continue;
-        for (const char* gn : gates) {
-            void* slot = ModLookup(g_mods[i], gn);
-            if (slot) {
-                void* real = *reinterpret_cast<void**>(slot);
-                if (real) return real;
-            }
+// Satu putaran discovery (dipanggil Wait tiap ~1 detik).
+static void DiscoverOnce() {
+    static bool file_done = false;
+    if (!file_done) {
+        char p[220];
+        std::snprintf(p, sizeof(p), "/data/data/%s/app_libs/liblogic.so", PkgName());
+        if (AddFileMod(p)) {
+            file_done = true;
+        } else {
+            std::snprintf(p, sizeof(p), "/data/user/0/%s/app_libs/liblogic.so", PkgName());
+            if (AddFileMod(p)) file_done = true;
         }
     }
-    for (size_t i = 0; i < g_mods.size(); i++) {
-        if (!g_mods[i].ok) continue;
-        if (ModLookup(g_mods[i], g1) || ModLookup(g_mods[i], g2))
-            continue;   // gate ada tapi belum diisi -> lewati modul ini
-        if (void* v = ModLookup(g_mods[i], s)) return v;
-    }
-    return nullptr;
+    TryDlopenOnce();
+    ScanMaps();
 }
 
+// Resolver symbol (urutan prioritas v3 — lihat komentar atas file).
 static void* Sym(const char* s) {
-    void* r = nullptr;
-    GUARD_TRY { r = SymRaw(s); } GUARD_END
-    return r;
+    // 1) dlsym bila linker mengenal lib asli
+    if (g_handle) {
+        if (void* p = dlsym(g_handle, s)) return p;
+    }
+    // 2) modul FILE (app_libs/liblogic.so): base runtime + st_value
+    for (auto& m : g_mods) {
+        if (!m.in_file || !m.base) continue;
+        uint64_t v = 0;
+        if (FindSym(m, s, &v) && v) return reinterpret_cast<void*>(m.base + v);
+    }
+    // 3) gate m_<nama>_ptr dari modul memori (pola stub, kalau packer mengisi)
+    char g1[96], g2[96];
+    std::snprintf(g1, sizeof(g1), "m_%s_ptr", s);
+    std::snprintf(g2, sizeof(g2), "m_%s", s);
+    for (auto& m : g_mods) {
+        if (m.in_file || !m.ok) continue;
+        uint64_t v = 0;
+        if ((FindSym(m, g1, &v) || FindSym(m, g2, &v)) && v) {
+            void* real = nullptr;
+            if (ReadPtrAt(m, v, &real) && real) return real;
+        }
+    }
+    // 4) symbol langsung dari modul memori TANPA gate
+    for (auto& m : g_mods) {
+        if (m.in_file || !m.ok || m.has_gate_var) continue;
+        uint64_t v = 0;
+        if (FindSym(m, s, &v) && v) return reinterpret_cast<void*>(m.base + v);
+    }
+    return nullptr;
 }
 
 #define RESOLVE(field, sym)                                              \
     do {                                                                 \
         api.field = reinterpret_cast<decltype(api.field)>(               \
             Sym(sym));                                                   \
-        if (!api.field) { Trace("resolve GAGAL: %s", sym); return false; } \
+        if (!api.field) { TraceState("resolve GAGAL: " sym); return false; } \
     } while (0)
 
 static bool ResolveAll() {
@@ -352,6 +513,14 @@ static bool ResolveAll() {
         api.type_get_class = [](const void* t) -> Class* {
             return t ? *reinterpret_cast<Class* const*>(t) : nullptr;
         };
+    // Sanity: alamat domain_get harus di region executable (kalau maps ter-scan).
+    if (!g_exec.empty() &&
+        !IsExecAddr(reinterpret_cast<uintptr_t>(api.domain_get))) {
+        Trace("domain_get=%p bukan alamat exec — tolak (base salah?)",
+              (void*)api.domain_get);
+        api = Api{};
+        return false;
+    }
     return true;
 }
 #undef RESOLVE
@@ -383,52 +552,43 @@ static bool LocateCsImage() {
     return false;
 }
 
-// (Penemuan modul il2cpp sekarang lewat ScanMapsOnce() — bukan dlopen by
-//  soname lagi: APK ini dipak, lib asli bisa di-rename / memfd / tidak
-//  terdaftar di namespace linker.)
+// (Discovery lewat DiscoverOnce(): file app_libs/liblogic.so -> dlopen NOLOAD ->
+//  scan /proc/self/maps. Tidak ada lagi handler sinyal: semua baca via pread /
+//  process_vm_readv, jadi tak mungkin wedged seperti versi sigsetjmp.)
 
 bool Wait(int timeout_ms) {
-    GuardInstall();   // packer remap halaman modul -> fault dibungkus, bukan crash
     const int step = 250;
     int waited = 0;
     int tick = 0;
-    int reported_hits = -1;
+    const long t_start = NowMs();
 
     for (;;) {
-        // 1. scan maps: saat belum ada modul, atau tiap ~2 dtk (packer bisa
-        //    memindah-mapping modul selama unpack; base-nya bisa berubah).
-        if (!g_api_ok && (g_mods.empty() || (tick % 8) == 0)) ScanMapsOnce();
-        tick++;
-
-        // 2. resolve API. Gagal HANYA berarti gate m_*_ptr belum diisi packer
-        //    -> ulangi di iterasi berikutnya, JANGAN menyerah.
-        if (!g_mods.empty() && !g_api_ok) {
-            if (ResolveAll()) {
-                g_api_ok = true;
-                Trace("API il2cpp ter-resolve (%zu modul, %d ms)", g_mods.size(), waited);
-            } else {
-                TraceState("API belum lengkap (gate belum diisi / simbol belum ada)");
+        if ((tick % 4) == 0) {          // discovery + resolve tiap ~1 dtk
+            if (!g_api_ok) {
+                DiscoverOnce();
+                if (ResolveAll()) {
+                    g_api_ok = true;
+                    Trace("API il2cpp ter-resolve (%zu sumber, %ld ms)",
+                          g_mods.size(), NowMs() - t_start);
+                } else {
+                    TraceState("API belum lengkap (tunggu file/base/gate)");
+                }
+            }
+            // metadata siap? (Assembly-CSharp.dll sudah terdaftar di domain)
+            if (g_api_ok && LocateCsImage()) {
+                Trace("il2cpp SIAP setelah %ld ms", NowMs() - t_start);
+                return true;
             }
         }
 
-        // 3. metadata siap? (Assembly-CSharp.dll sudah terdaftar di domain)
-        if (g_api_ok && LocateCsImage()) {
-            Trace("il2cpp SIAP setelah %d ms", waited);
-            return true;
-        }
-
-        if (g_guard_hits != reported_hits) {
-            reported_hits = g_guard_hits;
-            Trace("guard: %d fault memori dilewati (packer remap)", g_guard_hits);
-        }
-
-        if (timeout_ms >= 0 && waited >= timeout_ms) {
-            Trace("TIMEOUT %d ms: modul=%zu api=%d guard=%d",
-                  timeout_ms, g_mods.size(), (int)g_api_ok, g_guard_hits);
-            return false;
-        }
         usleep(step * 1000);
         waited += step;
+        tick++;
+        if (timeout_ms >= 0 && waited >= timeout_ms) {
+            Trace("TIMEOUT %d ms: sumber=%zu api=%d", timeout_ms,
+                  g_mods.size(), (int)g_api_ok);
+            return false;
+        }
     }
 }
 
