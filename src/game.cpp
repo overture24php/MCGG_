@@ -244,10 +244,6 @@ void ResetMatchState() {
 // ---------------------------------------------------------------------------
 static thread_local void*    tl_shop   = nullptr;   // MCLogicHeroShop (this)
 static thread_local uint8_t  tl_isAuto = 0;         // Refresh.isAutoRefresh
-static thread_local uint64_t tl_accId  = 0;         // IShowHandler_RefreshShop
-static thread_local uint8_t  tl_slot   = 0;         // IShowHandler_BuyHero
-static thread_local int32_t  tl_failId = 0;         // IShowHandler_BuyHeroFail
-static thread_local void*    tl_pd     = nullptr;   // CheckFreeBuyHero (this)
 
 static void OnRefreshEnter(void** a) {
     tl_shop   = a[0];
@@ -269,45 +265,25 @@ static void OnTryTriggerEnter(void** a) {
 }
 
 // IShowHandler_RefreshShop(accId x1, isAutoRefresh x2, ...)
-static void OnSyncRefreshEnter(void** a) {
-    tl_accId = reinterpret_cast<uintptr_t>(a[1]);
-}
-static void OnSyncRefreshLeave(void**, void*) {
-    uint64_t accId = tl_accId;
-    tl_accId = 0;
-    if (!accId) return;
+static void OnSyncRefreshLeave(void** a, void*) {
+    uint64_t accId = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(a[1]));
     SetLocalAccId(accId);
     feat::FreeBuyOnSyncRefresh(accId);
 }
 
 // IShowHandler_BuyHero(shopSlotIndex x1, m_ulAccountId x2, ...)
-static void OnBuyHeroEnter(void** a) {
-    tl_slot = *reinterpret_cast<uint8_t*>(&a[1]);
-}
-static void OnBuyHeroLeave(void**, void*) {
-    uint8_t slot = tl_slot;
-    tl_slot = 0;
-    feat::FreeBuyOnBuyHero(slot);
+static void OnBuyHeroLeave(void** a, void*) {
+    feat::FreeBuyOnBuyHero(static_cast<uint8_t>(reinterpret_cast<uintptr_t>(a[1])));
 }
 
 // IShowHandler_BuyHeroFail(failTextId x1)
-static void OnBuyFailEnter(void** a) {
-    tl_failId = static_cast<int32_t>(reinterpret_cast<intptr_t>(a[1]));
-}
-static void OnBuyFailLeave(void**, void*) {
-    int32_t id = tl_failId;
-    tl_failId = 0;
-    feat::FreeBuyOnBuyFail(id);
+static void OnBuyFailLeave(void** a, void*) {
+    feat::FreeBuyOnBuyFail(static_cast<int32_t>(reinterpret_cast<intptr_t>(a[1])));
 }
 
-// CheckFreeBuyHero(this) -> bool
-static void OnCheckFreeEnter(void** a) { tl_pd = a[0]; }
-static void OnCheckFreeLeave(void**, void* ret) {
-    void* pd = tl_pd;
-    tl_pd = nullptr;
-    if (!pd) return;
+static void OnCheckFreeLeave(void** a, void* ret) {
     if (reinterpret_cast<uintptr_t>(ret) != 0)
-        feat::FreeBuyOnFreeChecked(pd);
+        feat::FreeBuyOnFreeChecked(a[0]);
 }
 
 // Frame tick: dipanggil tiap game membaca Time.get_deltaTime (banyak per frame).
@@ -398,18 +374,21 @@ void Init() {
     }
 
     Class* kbdh = FindClass("", "MCBattleData"); // IShowHandler_* ada di MCBattleData
+    // CATATAN: hook di bawah sengaja on_enter = nullptr (seperti baseline yang
+    // stabil). Menambahkan on_enter di sini membuat on_enter_cb membaca 16
+    // argumen pada setiap panggilan method ini -> game restart loop.
     if (kbdh && want_shop) {
-        hook::Attach(MethodPtr(kbdh, "IShowHandler_RefreshShop", 5), OnSyncRefreshEnter,
+        hook::Attach(MethodPtr(kbdh, "IShowHandler_RefreshShop", 5), nullptr,
                      OnSyncRefreshLeave, "MCBattleData.IShowHandler_RefreshShop");
-        hook::Attach(MethodPtr(kbdh, "IShowHandler_BuyHero", 3), OnBuyHeroEnter,
+        hook::Attach(MethodPtr(kbdh, "IShowHandler_BuyHero", 3), nullptr,
                      OnBuyHeroLeave, "MCBattleData.IShowHandler_BuyHero");
-        hook::Attach(MethodPtr(kbdh, "IShowHandler_BuyHeroFail", 1), OnBuyFailEnter,
+        hook::Attach(MethodPtr(kbdh, "IShowHandler_BuyHeroFail", 1), nullptr,
                      OnBuyFailLeave, "MCBattleData.IShowHandler_BuyHeroFail");
     }
 
     if (kPd && want_shop)
-        hook::Attach(MethodPtr(kPd, "CheckFreeBuyHero", 1), OnCheckFreeEnter,
-                     OnCheckFreeLeave, "MCChessPlayerData.CheckFreeBuyHero");
+        hook::Attach(MethodPtr(kPd, "CheckFreeBuyHero", 1), nullptr, OnCheckFreeLeave,
+                     "MCChessPlayerData.CheckFreeBuyHero");
 
     // Frame tick: Time.get_deltaTime ada di UnityEngine.CoreModule.dll (bukan
     // Assembly-CSharp) -> cari image-nya dulu.
