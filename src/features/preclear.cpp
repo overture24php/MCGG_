@@ -31,6 +31,7 @@ static int64_t  g_startedAt = 0;
 static int      g_bought = 0;
 static bool     g_done = false;
 static bool     g_armed = false;
+static volatile bool g_wantRun = false;   // set hook frame, dipakai thread mod
 static char     g_sig[64] = "";
 static int      g_keepPrice = 0;
 
@@ -173,7 +174,18 @@ void PreClearOnRefreshLeave(void* shop, bool isAuto) {
 }
 
 void PreClearFrame() {
+    // Dipanggil dari hook frame (thread GAME). JANGAN kirim OP dari sini:
+    // panggilan il2cpp re-entrant di dalam hook = crash pc=0x0. Cukup nyalakan
+    // flag; pengiriman OP dikerjakan thread mod (lihat PreClearPump).
     if (!cfg::t.preclear || !g_armed) return;
+    g_wantRun = true;
+}
+
+// Dipanggil dari loop thread MOD (aman: thread ini sudah attach ke domain).
+// Semua pekerjaan berat Run() — pembuatan object OP + call method game — di sini.
+void PreClearPump() {
+    if (!cfg::t.preclear || !g_armed || !g_wantRun) return;
+    g_wantRun = false;
     Run("tick");
 }
 

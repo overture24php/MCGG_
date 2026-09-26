@@ -19,7 +19,8 @@ void ResetStackState();     // reset counter stack (clear_stack / awal match)
 
 // ---- dispatcher dari game.cpp -> fitur ----
 void PreClearOnRefreshLeave(void* shop, bool isAuto);
-void PreClearFrame();
+void PreClearFrame();       // hook frame: hanya set flag
+void PreClearPump();       // thread mod: eksekusi pengiriman OP (aman)
 void PreClearOnMatchEnd();
 void FreeBuyOnRefresh(void* shop);
 void FreeBuyOnSyncRefresh(uint64_t accId);

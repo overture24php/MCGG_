@@ -114,6 +114,9 @@ static void* MainThread(void*) {
         // update status file tiap ~1 detik
         if (++status_tick >= 2) {
             status_tick = 0;
+            // Kirim OP preclear dari thread MOD (bukan dari dalam hook game):
+            // hook frame hanya menyalakan flag, eksekusinya di sini.
+            feat::PreClearPump();
             status::Update();
         }
 
