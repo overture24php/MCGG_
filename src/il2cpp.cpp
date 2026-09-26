@@ -567,8 +567,11 @@ static bool LocateCsImage() {
     }
     TraceState("domain_get() hidup, cari Assembly-CSharp.dll");
 
-    ScopedThread st;   // attach dulu sebelum menyentuh domain
-
+    // JANGAN ScopedThread/thread_attach di sini: attach dari thread mod bisa
+    // deadlock (terbukti run yg macet di "cari Assembly-CSharp.dll").
+    // domain_get_assemblies + image_get_name hanya BACA daftar assembly, aman
+    // tanpa attach. Thread di-attach sekali di main loop (main.cpp) sebelum
+    // fitur yang benar-benar menyentuh objek managed.
     size_t n = 0;
     Assembly** list = api.domain_get_assemblies(dom, &n);
     if (!list || n == 0) return false;
