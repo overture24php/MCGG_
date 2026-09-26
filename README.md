@@ -142,9 +142,47 @@ v3 karena itu:
    `[pid t=ms]` (per-proses, tidak tercampur). Ambil dari PC:
    `adb shell "su -c 'cat /data/data/com.mobilechess.gp/files/mcggmod_il2_*.txt'"`
 
-Status file dipisah per-proses: proses game (`:UnityKillsMe`) menulis
-`/sdcard/mcggmod_status.txt`; proses shell/extractor (tidak punya il2cpp)
-menulis `/sdcard/mcggmod_status_shell.txt` supaya tidak saling menimpa.
+## Status file
+
+`/sdcard/mcggmod_status.txt` ditulis tiap ~1 detik oleh `status::Update()`
+dengan format detail (`il2cpp_ready`, `MCLogicHeroShop`, dst). Penulisnya
+proses game (`:UnityKillsMe`). Proses shell/extractor menulis file terpisah
+`/sdcard/mcggmod_status_shell.txt` supaya tidak saling menimpa.
+
+## Root cause yang sudah ditemukan (26-09-2026, diverifikasi di HP)
+
+Empat masalah terpisah, semuanya sudah diperbaiki:
+
+1. **`il2cpp not ready terus-menerus** — stub `libil2cpp.so` (384 KB) yang ada di
+   APK **tidak pernah** dipakai packer sebagai runtime: gate `m_il2cpp_*_ptr`-nya
+   tetap null. Yang benar: **`app_libs/liblogic.so`**. Resolver v3+ membacanya
+   langsung dari FILE (bukan gate), lalu mencocokkan base-nya lewat
+   `/proc/self/maps`. Hasil: `il2cpp SIAP` konsisten **~4 detik** setelah proses
+   Unity start (dari sebelumnya `TIMEOUT 120000 ms`).
+2. **Thread mod `wedged` (trace berhenti total, status nyangkut)** — versi lama
+   memasang handler `SIGSEGV/SIGBUS` + `sigsetjmp`; saat packer mencabut halaman
+   modul, `longjmp` keluar dari tengah `malloc`/stdio dan thread **buntu**.
+   v3+: semua baca memori lewat `process_vm_readv` (EFAULT, bukan crash), tanpa
+   handler sinyal sama sekali.
+3. **Hang di `feat::InitAll()` saat boot** — `il2cpp_thread_attach` +
+   `class_get_methods` dipanggil saat game masih di layar login, bisa masuk GC
+   stop-the-world. Fix: attach + `InitAll` dipindah ke **main loop** (dengan
+   retry) sehingga tidak menabrak GC saat boot, dan `status::Update()` tidak
+   lagi memanggil `FindClass` tiap tick (di-cache).
+4. **`MethodFindArg0` hang / SIGABRT** — `class_get_methods` di liblogic
+   (build Moonton) tidak punya signature standar sehingga iterasinya tidak pernah
+   selesai; fallback-nya malah `abort()` di dalam lib. Fix: `MethodFindArg0`
+   sekarang hanya pakai `class_get_method_from_name(k, "visit", 2)` (aman,
+   sudah terbukti ketemu: `ok=1 fn=0x…`).
+
+Status saat ini: **semua hook terpasang** (visit ×3, CraftHero ×2,
+`MCLogicHeroShop.Refresh`/`TryTriggerFreeBuyEvents`, `IShowHandler_*`,
+`CheckFreeBuyHero`), dan `status::Update` menulis live ke
+`/sdcard/mcggmod_status.txt`.
+
+Sisa yang diketahui: `TriggerAutoWin` / `TriggerSkipGuide` memanggil method game
+secara langsung, jadi hanya aman **di dalam match** (sudah diberi guard
+`InMatch()`).
 
 ## Pitfall versi PC yang sudah dihindari di kode ini
 
