@@ -395,22 +395,28 @@ void Init() {
     // Hook frame hanya kalau ada fitur yang butuh tick; tanpa fitur -> tanpa hook
     // sama sekali (hook di game yang masih initializing = restart loop).
     const bool want_frame = cfg::t.preclear || cfg::t.autostack || cfg::t.autobuy_guin;
+    bool time_ok = false;
     if (want_frame) {
         Image* unity = FindImage("UnityEngine.CoreModule.dll");
         Class* kTime = unity ? FindClassIn(unity, "UnityEngine", "Time") : nullptr;
-        if (kTime)
-            hook::Attach(MethodPtr(kTime, "get_deltaTime", 0), OnFrame, nullptr,
-                         "Time.get_deltaTime");
-        else
+        if (kTime) {
+            time_ok = (MethodPtr(kTime, "get_deltaTime", 0) != nullptr);
+            if (time_ok)
+                hook::Attach(MethodPtr(kTime, "get_deltaTime", 0), OnFrame, nullptr,
+                             "Time.get_deltaTime");
+            else
+                LOGE("[GAME] get_deltaTime null");
+        } else {
             LOGE("[GAME] Time.get_deltaTime tidak ditemukan -> frame tick MATI "
                  "(preclear/freebuy/autostack butuh tick)");
+        }
     } else {
         LOGI("[GAME] frame tick OFF (tidak ada fitur tick aktif)");
     }
 
     LOGI("[GAME] shared init: lbm=0x%zx refreshCost=0x%zx chessPd=0x%zx send=%s time=%s",
          off_lbm, off_refreshCost, off_chessPd,
-         m_sendOper.ok() ? "OK" : "MISS", kTime ? "OK" : "MISS");
+         m_sendOper.ok() ? "OK" : "MISS", time_ok ? "OK" : "MISS");
 }
 
 } // namespace game
