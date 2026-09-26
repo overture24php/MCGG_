@@ -184,6 +184,7 @@ void TriggerSkipGuide() {
     void* inst = SingletonInstance(k);
     if (!inst) { LOGW("[SKIP] GuideManager.Instance NULL"); return; }
     il2::M fn = il2::MethodFind(k, "SkipTutorialBattleGuide", 1);
+    LOGI("[SKIP] inst=%p fn.fn=%p fn.mi=%p", inst, fn.fn, fn.mi);
     if (!fn.ok() || !fn.mi) { LOGE("[SKIP] SkipTutorialBattleGuide TIDAK ADA/pointer null"); return; }
     // Jaga tambahan: pointer method harus berada di region executable modul —
     // kalau tidak, panggilan = jump ke 0x0 (SIGABRT).
