@@ -137,14 +137,55 @@ $nsAndroid = 'http://schemas.android.com/apk/res/android'
 $appNode = $mf.manifest.application
 if (-not $appNode) { Fail "<application> tidak ketemu di manifest" }
 
+# Matikan scoped storage di Android 10: targetSdk 35 membuat scoped storage AKTIF
+# sehingga fopen("/sdcard/mcggmod_status.txt") + FileReader menu ditolak sistem
+# (penyebab menu selalu "menunggu payload" & file status tidak pernah ada).
+# Di Android 10 flag ini mengembalikan akses /sdcard legacy (tetap butuh
+# WRITE_EXTERNAL_STORAGE -> grant: pm grant com.mobilechess.gp android.permission.WRITE_EXTERNAL_STORAGE).
+# Di Android 11+ flag diabaikan sistem — tidak berbahaya.
+$appNode.SetAttribute('requestLegacyExternalStorage', $nsAndroid, 'true')
+Write-Host "  requestLegacyExternalStorage=true diset"
+
+
+# DUA provider (class sama, authority beda): provider hanya di-instantiate di
+# proses yang cocok dengan android:process-nya. Game MCGG menjalankan
+# MobaGameUnityActivity di proses TERPISAH ":UnityKillsMe" — tanpa provider kedua,
+# menu + libmcggmod.so hanya hidup di proses utama (splash) dan TIDAK PERNAH
+# masuk proses game (hook il2cpp tidak aktif, menu hilang saat masuk game).
 $prov = $mf.CreateElement('provider')
 $prov.SetAttribute('name', $nsAndroid, 'ph.over.mcgg.MCGGProvider')
 $prov.SetAttribute('authorities', $nsAndroid, "$($mf.manifest.package).mcgginit")
 $prov.SetAttribute('exported', $nsAndroid, 'false')
 $prov.SetAttribute('initOrder', $nsAndroid, '100')
 [void]$appNode.AppendChild($prov)
+
+$prov2 = $mf.CreateElement('provider')
+$prov2.SetAttribute('name', $nsAndroid, 'ph.over.mcgg.MCGGProvider2')
+$prov2.SetAttribute('authorities', $nsAndroid, "$($mf.manifest.package).mcgginit2")
+$prov2.SetAttribute('exported', $nsAndroid, 'false')
+$prov2.SetAttribute('initOrder', $nsAndroid, '100')
+$prov2.SetAttribute('process', $nsAndroid, ':UnityKillsMe')
+[void]$appNode.AppendChild($prov2)
+
 $mf.Save($manifestPath)
-Write-Host "  provider ph.over.mcgg.MCGGProvider disisipkan"
+Write-Host "  provider MCGGProvider (utama) + MCGGProvider2 (:UnityKillsMe) disisipkan"
+
+# ---------------------------------------------------------------- staging payload ke work dir
+# PENTING: lib + dex dimasukkan LEWAT apktool build, BUKAN inject zip .NET.
+# ZipArchive .NET Framework menulis entry .so sebagai DEFLATE "stored blocks"
+# (compressed > ukuran asli) yang membuat parser zip native Android (libziparchive,
+# dipakai installd) gagal -> INSTALL_FAILED_CONTAINER_ERROR res=-18 saat install.
+Write-Step "Staging libmcggmod.so + menu dex ke work dir"
+$soDestDir = Join-Path $WorkDir 'lib\arm64-v8a'
+New-Item -ItemType Directory -Force -Path $soDestDir | Out-Null
+Copy-Item $Payload (Join-Path $soDestDir 'libmcggmod.so') -Force
+Write-Host "  lib\arm64-v8a\libmcggmod.so distage"
+
+$n = 1
+while (Test-Path (Join-Path $WorkDir "classes$(if($n -eq 1){''}else{$n}).dex")) { $n++ }
+$dexName = "classes$(if($n -eq 1){''}else{$n}).dex"
+Copy-Item $MenuDex (Join-Path $WorkDir $dexName) -Force
+Write-Host "  $dexName distage"
 
 # ---------------------------------------------------------------- build balik
 Write-Step "Build APK (apktool b)"
@@ -152,27 +193,6 @@ $unsignedApk = Join-Path $ScriptDir 'out\unsigned.apk'
 New-Item -ItemType Directory -Force -Path (Split-Path $Out -Parent) | Out-Null
 Remove-Item $unsignedApk -Force -ErrorAction SilentlyContinue
 if ((Invoke-Native 'java' @('-Xmx2g', '-jar', $ApkToolJar, 'b', $WorkDir, '-o', $unsignedApk)) -ne 0 -or -not (Test-Path $unsignedApk)) { Fail "apktool build gagal" }
-
-# ---------------------------------------------------------------- inject dex + so via zip langsung
-Write-Step "Inject menu.dex + libmcggmod.so ke APK"
-Add-Type -AssemblyName System.IO.Compression.FileSystem
-$zip = [System.IO.Compression.ZipFile]::Open($unsignedApk, 'Update')
-try {
-    $n = 1
-    while ($zip.GetEntry("classes$(if($n -eq 1){''}else{$n}).dex")) { $n++ }
-    $dexName = "classes$(if($n -eq 1){''}else{$n}).dex"
-    $eDex = $zip.CreateEntry($dexName, [System.IO.Compression.CompressionLevel]::Optimal)
-    $ws = $eDex.Open(); $fs = [System.IO.File]::OpenRead($MenuDex)
-    $fs.CopyTo($ws); $fs.Dispose(); $ws.Dispose()
-    Write-Host "  $dexName ditambahkan"
-
-    $soName = 'lib/arm64-v8a/libmcggmod.so'
-    if ($zip.GetEntry($soName)) { $zip.GetEntry($soName).Delete() }
-    $eSo = $zip.CreateEntry($soName, [System.IO.Compression.CompressionLevel]::NoCompression)
-    $ws2 = $eSo.Open(); $fs2 = [System.IO.File]::OpenRead($Payload)
-    $fs2.CopyTo($ws2); $fs2.Dispose(); $ws2.Dispose()
-    Write-Host "  $soName ditambahkan (stored, no-compress)"
-} finally { $zip.Dispose() }
 
 # ---------------------------------------------------------------- zipalign + sign
 Write-Step "Zipalign"

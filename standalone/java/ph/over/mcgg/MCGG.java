@@ -27,6 +27,7 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.Switch;
 import android.widget.TextView;
+import android.util.Log;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -70,6 +71,37 @@ public final class MCGG implements Application.ActivityLifecycleCallbacks {
         sInited = true;
         ((Application) app).registerActivityLifecycleCallbacks(new MCGG());
     }
+
+    // ---- izin storage (targetSdk 35 + Android 10 = scoped storage + izin runtime) ----
+    // Tanpa izin ini payload tidak bisa menulis /sdcard/mcggmod_status.txt dan
+    // menu tidak bisa membacanya ("menunggu payload" selamanya). Izin berlaku
+    // per-UID jadi cukup diminta sekali dari proses mana pun.
+    private static boolean sPermAsked;
+
+    private static void askStoragePerm(Activity a) {
+        if (sPermAsked || a == null) return;
+        sPermAsked = true;
+        try {
+            // Refleksi: android.jar stub = API16, sedangkan checkSelfPermission/
+            // requestPermissions baru ada di API23 (perangkat target API29+ = ada).
+            int granted = (Integer) a.getClass()
+                    .getMethod("checkSelfPermission", String.class)
+                    .invoke(a, "android.permission.WRITE_EXTERNAL_STORAGE");
+            if (granted == 0) {
+                Log.i("MCGGMENU", "izin storage sudah ada");
+                return;
+            }
+            a.getClass()
+                    .getMethod("requestPermissions", String[].class, int.class)
+                    .invoke(a, new String[]{
+                            "android.permission.WRITE_EXTERNAL_STORAGE",
+                            "android.permission.READ_EXTERNAL_STORAGE"}, 7701);
+            Log.i("MCGGMENU", "dialog izin storage diminta");
+        } catch (Throwable t) {
+            Log.e("MCGGMENU", "minta izin storage gagal: " + t);
+        }
+    }
+
 
     // ---- ActivityLifecycleCallbacks: pasang/repas panel tiap resume ----
     @Override
@@ -126,9 +158,12 @@ public final class MCGG implements Application.ActivityLifecycleCallbacks {
     }
 
     private static void attach(final Activity act) {
+        askStoragePerm(act);
         if (sPanel != null && sHost == act && sPanel.getParent() != null) return;
         detachPanel();
         sHost = act;
+        Log.i("MCGGMENU", "attach panel -> " + act.getClass().getSimpleName()
+                + " (proc " + android.os.Process.myPid() + ")");
         int pad = dp(act, 10);
 
         final LinearLayout panel = new LinearLayout(act);
@@ -283,7 +318,24 @@ public final class MCGG implements Application.ActivityLifecycleCallbacks {
         MAIN.postDelayed(new Runnable() {
             @Override
             public void run() {
-                if (gen != sGen || sStatus == null) return;
+                if (gen != sGen) return;
+                // Re-attach defensif: activity game Unity (proses :UnityKillsMe)
+                // bisa mengganti content view / menambah view penuh SETELAH
+                // onResume, sehingga panel ikut terhapus / tertutup. Pasang
+                // ulang kalau hilang; kalau masih ada, angkat ke paling atas.
+                try {
+                    Activity a = sHost;
+                    if (a != null && !a.isFinishing()) {
+                        if (sPanel == null || sPanel.getParent() == null) {
+                            Log.i("MCGGMENU", "panel hilang, pasang ulang");
+                            attach(a);
+                        } else {
+                            sPanel.bringToFront();
+                        }
+                    }
+                } catch (Throwable ignored) {
+                }
+                if (sStatus == null) return;
                 sStatus.setText(readStatus());
                 startPoll(gen);
             }

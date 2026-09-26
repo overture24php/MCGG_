@@ -22,9 +22,20 @@
 #include <cstdio>
 
 static void WriteStatus(const char* step) {
+    // identitas proses: provider jalan di 2 proses (main + :UnityKillsMe),
+    // il2cpp hanya ada di proses Unity -> tanpa ini status bisa saling timpa.
+    char proc[96] = "?";
+    FILE* c = std::fopen("/proc/self/cmdline", "r");
+    if (c) {
+        size_t n = std::fread(proc, 1, sizeof(proc) - 1, c);
+        proc[n] = 0;
+        std::fclose(c);
+    }
     FILE* f = std::fopen("/sdcard/mcggmod_status.txt", "w");
     if (f) {
         std::fprintf(f, "step: %s\n", step);
+        std::fprintf(f, "proc: %s\n", proc);
+        std::fprintf(f, "pid: %d\n", (int)getpid());
         std::fprintf(f, "time: %ld\n", (long)time(nullptr));
         std::fclose(f);
     }
