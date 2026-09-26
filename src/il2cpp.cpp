@@ -20,6 +20,9 @@
 #include <unistd.h>
 #include <elf.h>
 #include <initializer_list>
+#include <signal.h>
+#include <setjmp.h>
+#include <sys/syscall.h>
 
 namespace il2 {
 
@@ -133,6 +136,54 @@ static std::vector<ModSyms> g_mods;   // SEMUA modul yang mengekspor il2cpp:
                                       // stub gate libil2cpp.so + lib asli (hasil unpack)
 static bool g_api_ok = false;         // true setelah ResolveAll() lengkap
 
+// ---------------------------------------------------------------------------
+// Guard SIGSEGV/SIGBUS untuk pembacaan modul.
+// Packer (ByteDance: libnpth/libshadowhook/libEncryptor) mem-map/unmap/mprotect
+// modul sambil unpack — probe & resolve bisa menyentuh halaman yang baru
+// dicabut izinnya. Bukti: tombstone SEGV_ACCERR, pc di il2::Wait+1720.
+// Pola: sigsetjmp -> fault = "gagal baca", lanjut; HANYA thread kita yang
+// di-longjmp; crash thread lain tetap diteruskan ke handler sebelumnya.
+// ---------------------------------------------------------------------------
+static sigjmp_buf g_jmp;
+static volatile sig_atomic_t g_guard_on = 0;
+static long g_guard_tid = 0;
+static struct sigaction g_prev_segv;
+static struct sigaction g_prev_bus;
+static int g_guard_hits = 0;
+
+static void GuardHandler(int sig, siginfo_t*, void*) {
+    long me = (long)syscall(SYS_gettid);
+    if (g_guard_on && me == g_guard_tid) siglongjmp(g_jmp, 1);
+    if (sig == SIGSEGV) sigaction(SIGSEGV, &g_prev_segv, nullptr);
+    else                sigaction(SIGBUS,  &g_prev_bus,  nullptr);
+    raise(sig);
+}
+
+static void GuardInstall() {
+    static bool done = false;
+    if (done) return;
+    done = true;
+    struct sigaction sa;
+    std::memset(&sa, 0, sizeof(sa));
+    sa.sa_sigaction = GuardHandler;
+    sa.sa_flags = SA_SIGINFO;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGSEGV, &sa, &g_prev_segv);
+    sigaction(SIGBUS,  &sa, &g_prev_bus);
+}
+
+static bool GuardBegin() {
+    g_guard_tid = (long)syscall(SYS_gettid);
+    g_guard_on = 1;
+    if (sigsetjmp(g_jmp, 1) == 0) return true;
+    g_guard_hits++;
+    return false;
+}
+static void GuardEnd() { g_guard_on = 0; }
+
+#define GUARD_TRY if (GuardBegin())
+#define GUARD_END GuardEnd();
+
 // path sudah pernah di-trace? (anti-spam saat polling maps)
 static bool SeenPath(const char* p) {
     static std::vector<std::string> seen;
@@ -142,9 +193,18 @@ static bool SeenPath(const char* p) {
     return false;
 }
 
+// Hanya modul relevan yang diprobe: lib dari /data (termasuk apk!/lib/...),
+// memfd, file (deleted), dan mapping anonim (hasil unpack biasanya anonim).
+// /system, /apex, /vendor, /dev dst dilewati -> jauh lebih sedikit sentuhan.
+static bool RelevantPath(const char* p) {
+    if (!p || !*p) return true;
+    if (std::strstr(p, "memfd") || std::strstr(p, "(deleted)")) return true;
+    return std::strncmp(p, "/data/", 6) == 0;
+}
+
 // Uji satu kandidat base dari maps. Kandidat valid kalau punya gate
 // m_il2cpp_*_ptr (pola stub Moonton) atau thunk il2cpp_* (Unity asli).
-static bool ProbeModule(uintptr_t base, const char* path) {
+static bool ProbeModuleRaw(uintptr_t base, const char* path) {
     for (size_t i = 0; i < g_mods.size(); i++)
         if (g_mods[i].base == base) return false;
     ModSyms m;
@@ -157,6 +217,13 @@ static bool ProbeModule(uintptr_t base, const char* path) {
     Trace("modul il2cpp: base=%p gate=%d direct=%d path=%s",
           (void*)base, (int)gate, (int)direct, path ? path : "?");
     return true;
+}
+
+// versi ber-guard: halaman modul bisa dicabut packer saat kita membacanya
+static bool ProbeModule(uintptr_t base, const char* path) {
+    bool ok = false;
+    GUARD_TRY { ok = ProbeModuleRaw(base, path); } GUARD_END
+    return ok;
 }
 
 // Scan /proc/self/maps — teknik libTool (mlsmanXP): TIDAK bergantung nama
@@ -201,6 +268,7 @@ static void ScanMapsOnce() {
         if (off != 0 || perms[0] != 'r') continue;   // hanya segmen pertama (header ELF)
         char* path = std::strchr(line, '/');
         if (path) { char* nl = std::strchr(path, '\n'); if (nl) *nl = 0; }
+        if (path && !RelevantPath(path)) continue;   // /system, /apex, /dev, ...
         if (path && (std::strstr(path, "liblogic") || std::strstr(path, "libil2cpp") ||
                      std::strstr(path, "libResources") || std::strstr(path, "memfd") ||
                      std::strstr(path, "apk!") || std::strstr(path, "libunity"))) {
@@ -217,13 +285,16 @@ static void ScanMapsOnce() {
 // 2) direct/thunk il2cpp_* HANYA dari modul yang tidak punya gate itu
 //    (lib asli hasil unpack biasanya diekspor langsung).
 // Gate ada tapi masih null = belum siap -> return null, Wait() mengulang.
-static void* Sym(const char* s) {
-    const std::string g1 = std::string("m_") + s + "_ptr";
-    const std::string g2 = std::string("m_") + s;
+// Tanpa alokasi heap + dibungkus guard (aman menyentuh modul yang di-remap).
+static void* SymRaw(const char* s) {
+    char g1[80], g2[80];
+    std::snprintf(g1, sizeof(g1), "m_%s_ptr", s);
+    std::snprintf(g2, sizeof(g2), "m_%s", s);
+    const char* gates[2] = {g1, g2};
     for (size_t i = 0; i < g_mods.size(); i++) {
         if (!g_mods[i].ok) continue;
-        for (const std::string* g : {&g1, &g2}) {
-            void* slot = ModLookup(g_mods[i], g->c_str());
+        for (const char* gn : gates) {
+            void* slot = ModLookup(g_mods[i], gn);
             if (slot) {
                 void* real = *reinterpret_cast<void**>(slot);
                 if (real) return real;
@@ -232,11 +303,17 @@ static void* Sym(const char* s) {
     }
     for (size_t i = 0; i < g_mods.size(); i++) {
         if (!g_mods[i].ok) continue;
-        if (ModLookup(g_mods[i], g1.c_str()) || ModLookup(g_mods[i], g2.c_str()))
+        if (ModLookup(g_mods[i], g1) || ModLookup(g_mods[i], g2))
             continue;   // gate ada tapi belum diisi -> lewati modul ini
         if (void* v = ModLookup(g_mods[i], s)) return v;
     }
     return nullptr;
+}
+
+static void* Sym(const char* s) {
+    void* r = nullptr;
+    GUARD_TRY { r = SymRaw(s); } GUARD_END
+    return r;
 }
 
 #define RESOLVE(field, sym)                                              \
@@ -311,17 +388,20 @@ static bool LocateCsImage() {
 //  terdaftar di namespace linker.)
 
 bool Wait(int timeout_ms) {
+    GuardInstall();   // packer remap halaman modul -> fault dibungkus, bukan crash
     const int step = 250;
     int waited = 0;
+    int tick = 0;
+    int reported_hits = -1;
 
     for (;;) {
-        // 1. temukan modul il2cpp lewat /proc/self/maps (stub gate +/atau
-        //    lib hasil unpack). Tidak butuh dlopen by-name.
-        if (!g_api_ok) ScanMapsOnce();
+        // 1. scan maps: saat belum ada modul, atau tiap ~2 dtk (packer bisa
+        //    memindah-mapping modul selama unpack; base-nya bisa berubah).
+        if (!g_api_ok && (g_mods.empty() || (tick % 8) == 0)) ScanMapsOnce();
+        tick++;
 
         // 2. resolve API. Gagal HANYA berarti gate m_*_ptr belum diisi packer
-        //    -> ulangi di iterasi berikutnya, JANGAN menyerah (versi lama
-        //    return false di sini = langsung FAILED walau cuma belum siap).
+        //    -> ulangi di iterasi berikutnya, JANGAN menyerah.
         if (!g_mods.empty() && !g_api_ok) {
             if (ResolveAll()) {
                 g_api_ok = true;
@@ -337,8 +417,14 @@ bool Wait(int timeout_ms) {
             return true;
         }
 
+        if (g_guard_hits != reported_hits) {
+            reported_hits = g_guard_hits;
+            Trace("guard: %d fault memori dilewati (packer remap)", g_guard_hits);
+        }
+
         if (timeout_ms >= 0 && waited >= timeout_ms) {
-            Trace("TIMEOUT %d ms: modul=%zu api=%d", timeout_ms, g_mods.size(), (int)g_api_ok);
+            Trace("TIMEOUT %d ms: modul=%zu api=%d guard=%d",
+                  timeout_ms, g_mods.size(), (int)g_api_ok, g_guard_hits);
             return false;
         }
         usleep(step * 1000);
