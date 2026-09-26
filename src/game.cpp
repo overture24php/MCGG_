@@ -387,7 +387,16 @@ void Init() {
     }
 
     // ---- pasang hook pemicu ----
-    if (kShop) {
+    // PENTING: hook sistem shop diintervensi saat game masih initializing, dan
+    // pada beberapa versi itu memicu abort() di liblogic (game restart-loop).
+    // Jadi hanya pasang kalau fiturnya benar-benar mau dipakai. AutoWin/Bypass
+    // tidak bergantung hook shop, jadi tetap selalu aktif.
+    const bool want_shop = cfg::t.preclear || cfg::t.autobuy_guin;
+    LOGI("[GAME] hook shop %s (preclear=%d guin=%d)",
+         want_shop ? "PASANG" : "lewati (fitur off)",
+         (int)cfg::t.preclear, (int)cfg::t.autobuy_guin);
+
+    if (kShop && want_shop) {
         hook::Attach(MethodPtr(kShop, "Refresh", 4), OnRefreshEnter, OnRefreshLeave,
                      "MCLogicHeroShop.Refresh");
         hook::Attach(MethodPtr(kShop, "TryTriggerFreeBuyEvents", 0), OnTryTriggerEnter,
@@ -395,7 +404,7 @@ void Init() {
     }
 
     Class* kbdh = FindClass("", "MCBattleData"); // IShowHandler_* ada di MCBattleData
-    if (kbdh) {
+    if (kbdh && want_shop) {
         hook::Attach(MethodPtr(kbdh, "IShowHandler_RefreshShop", 5), OnSyncRefreshEnter,
                      OnSyncRefreshLeave, "MCBattleData.IShowHandler_RefreshShop");
         hook::Attach(MethodPtr(kbdh, "IShowHandler_BuyHero", 3), OnBuyHeroEnter,
@@ -404,7 +413,7 @@ void Init() {
                      OnBuyFailLeave, "MCBattleData.IShowHandler_BuyHeroFail");
     }
 
-    if (kPd)
+    if (kPd && want_shop)
         hook::Attach(MethodPtr(kPd, "CheckFreeBuyHero", 1), OnCheckFreeEnter,
                      OnCheckFreeLeave, "MCChessPlayerData.CheckFreeBuyHero");
 
