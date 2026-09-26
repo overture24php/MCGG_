@@ -111,6 +111,16 @@ static void* SingletonInstance(il2::Class* k) {
 void TriggerAutoWin() {
     il2::ScopedThread st;
 
+    // Di luar match singleton belum dibuat -> memanggilnya = SIGABRT.
+    // (Fungsi ini biasanya dipakai saat match; guard tetap dipasang biar aman.)
+    {
+        il2::Class* kChk = il2::FindClass("", "MCLogicBattleData");
+        void* chk = nullptr;
+        il2::Field* fChk = kChk ? il2::FieldFind(kChk, "_instance") : nullptr;
+        if (fChk) il2::api.field_static_get_value(fChk, &chk);
+        if (!chk) { LOGW("[AUTOWIN] di luar match, dilewati"); return; }
+    }
+
     // 1. MCReportBattleData: fightDuringTime + battleDataMsg (PC 1903-1921)
     il2::Class* kRd = il2::FindClass("", "MCReportBattleData");
     void* rd = SingletonInstance(kRd);
@@ -147,8 +157,28 @@ void TriggerAutoWin() {
     LOGI("[AUTOWIN] OnAutoWin(true) dipanggil (fightDuringTime=%u)", kMinBattleTime);
 }
 
+// Hanya panggil method game kalau BENAR-BENAR dalam match. Di layar login
+// singleton GuideManager / MCReportBattleData belum dibuat -> memanggilnya
+// = SIGABRT di liblogic (terbukti). Game hanya membuat instance
+// MCLogicBattleData saat match dimulai, jadi itu penanda paling murah.
+static bool InMatch() {
+    il2::Class* k = il2::FindClass("", "MCLogicBattleData");
+    if (!k) return false;
+    void* inst = nullptr;
+    il2::Field* f = il2::FieldFind(k, "_instance");
+    if (f) il2::api.field_static_get_value(f, &inst);
+    if (inst) return true;
+    // fallback: cek battle manager instance
+    il2::Field* m = il2::FieldFind(k, "m_SelfLogicBattleManager");
+    if (!m) return false;
+    void* lbm = nullptr;
+    il2::api.field_static_get_value(m, &lbm);
+    return lbm != nullptr;
+}
+
 void TriggerSkipGuide() {
     il2::ScopedThread st;
+    if (!InMatch()) { LOGW("[SKIP] di luar match, dilewati"); return; }
     il2::Class* k = il2::FindClass("", "GuideManager");
     void* inst = SingletonInstance(k);
     if (!inst) { LOGW("[SKIP] GuideManager.Instance NULL"); return; }
