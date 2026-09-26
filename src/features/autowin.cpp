@@ -180,10 +180,17 @@ void TriggerSkipGuide() {
     il2::ScopedThread st;
     if (!InMatch()) { LOGW("[SKIP] di luar match, dilewati"); return; }
     il2::Class* k = il2::FindClass("", "GuideManager");
+    if (!k) { LOGW("[SKIP] class GuideManager null"); return; }
     void* inst = SingletonInstance(k);
     if (!inst) { LOGW("[SKIP] GuideManager.Instance NULL"); return; }
     il2::M fn = il2::MethodFind(k, "SkipTutorialBattleGuide", 1);
-    if (!fn.ok()) { LOGE("[SKIP] SkipTutorialBattleGuide TIDAK ADA"); return; }
+    if (!fn.ok() || !fn.mi) { LOGE("[SKIP] SkipTutorialBattleGuide TIDAK ADA/pointer null"); return; }
+    // Jaga tambahan: pointer method harus berada di region executable modul —
+    // kalau tidak, panggilan = jump ke 0x0 (SIGABRT).
+    if (((uintptr_t)fn.fn & 0x3) != 0 || !fn.fn) {
+        LOGE("[SKIP] fn pointer rusak, dilewati");
+        return;
+    }
     ((void (*)(void*, bool, void*))fn.fn)(inst, true, fn.mi);
     LOGI("[SKIP] SkipTutorialBattleGuide(true) dipanggil");
 }
