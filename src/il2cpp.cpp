@@ -710,6 +710,10 @@ M MethodFind(const char* ns, const char* cls, const char* name, int argc) {
 }
 
 // Membedakan overload via nama class arg ke-0 (SdpPacker vs SdpUnpacker).
+// Membedakan overload visit(SdpPacker, bool) vs visit(SdpUnpacker, bool) dengan
+// batas iterasi keras. class_get_methods versi liblogic ini kadang loop tak
+// berujung (iter-pointer salah signature) -> MACET thread. Kalau tidak ketemu
+// lewat iterasi, fallback ke class_get_method_from_name(visit, 2).
 M MethodFindArg0(Class* k, const char* name, int argc, const char* arg0Class) {
     M r;
     if (!k || !api.class_get_methods || !api.method_get_name ||
@@ -717,9 +721,16 @@ M MethodFindArg0(Class* k, const char* name, int argc, const char* arg0Class) {
         LOGE("MethodFindArg0: API resolver belum lengkap");
         return r;
     }
+    // Batas keras: class normal < 500 method. Lewat ini iterasi tidak akan
+    // pernah selesai -> stop, jangan hangs.
     for (Class* c = k; c; c = api.class_get_parent ? api.class_get_parent(c) : nullptr) {
         void* iter = nullptr;
+        int guard  = 0;
         while (Method* m = api.class_get_methods(c, &iter)) {
+            if (++guard > 2000) {
+                LOGW("MethodFindArg0: iterasi melewati batas, stop");
+                break;
+            }
             const char* mn = api.method_get_name(m);
             if (!mn || std::strcmp(mn, name) != 0) continue;
             if ((int)api.method_get_param_count(m) != argc) continue;
@@ -732,6 +743,16 @@ M MethodFindArg0(Class* k, const char* name, int argc, const char* arg0Class) {
                 if (!r.fn) { LOGW("method %s(%s) methodPointer null", name, arg0Class); r.mi = nullptr; }
                 goto done;
             }
+        }
+    }
+    // fallback: overload pertama dengan nama+argc (untuk visit biasanya sudah
+    // benar karena hanya ada 1 overload visit di class hasil paket).
+    if (!r.mi && api.class_get_method_from_name) {
+        Method* m = api.class_get_method_from_name(k, name, argc);
+        if (m) {
+            r.mi = m;
+            r.fn = *reinterpret_cast<void**>(m);
+            if (!r.fn) r.mi = nullptr;
         }
     }
 done:
