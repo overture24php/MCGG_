@@ -130,6 +130,8 @@ Dari PC:
 | Magisk: "not a Magisk module" | zip lama tanpa META-INF → pakai `mcgg-zygisk-flashable.zip` v1.2+ |
 | Log `Zygisk: MATI` saat flash | aktifkan Zygisk, reboot, flash ulang |
 | `libil2cpp.so tidak muncul dalam 120s` | game belum dibuka / bukan proses anak; buka game sampai loading |
+| Mod nyangkut di `waiting_for_il2cpp` | cek trace: `adb shell "su -c 'cat /data/data/com.mobilechess.gp/files/mcggmod_il2_*.txt'"` (file per-pid, prefix `[pid t=ms]`) |
+| Trace berisi `domain_get=... bukan alamat exec` | base `app_libs/liblogic.so` tidak ketemu di maps — kirim isi trace |
 | `class TIDAK ADA` / `method TIDAK ADA` | nama berubah di versi game — cocokkan dengan dump runtime |
 | APK tidak bisa tulis conf | izin "Akses semua file" belum diberikan |
 | Tombol JALAN tidak terbuka lagi | payload belum menulis balik `0` → cek logcat, pastikan module aktif |

@@ -112,6 +112,40 @@ Pending free-buy, dan AutoStackTick dijalankan dari hook ini (thread game).
 index 11 (layout AAPCS64). 3 craft pertama log nilai mentah `a3..a12` untuk
 verifikasi layout dari logcat.
 
+## Resolver v3 (pembacaan tanpa crash)
+
+APK ini dipak `libEncryptor.so`. Setelah dipetakan, pembagiannya:
+
+- `libil2cpp.so` di dalam APK = **stub 384 KB**. Isinya 243 variabel gate
+  `m_il2cpp_*_ptr` + thunk `il2cpp_*` 16 byte — **tapi gate-nya tidak pernah
+  diisi** packer versi ini (terbukti di HP: `resolve GAGAL: il2cpp_domain_get`
+  terus sampai timeout, dan isi `m_il2cpp_domain_get_ptr` tetap null). Stub
+  jadi tidak bisa jadi sumber API.
+- **il2cpp asli** ada di `/data/data/<pkg>/app_libs/liblogic.so` (162 MB, file
+  nyata milik uid app) dan diekspor **langsung** — `il2cpp_domain_get` di
+  st_value `0x3c63b84`, total 2.837 dynsym, tanpa gate. Packer mem-map file itu
+  dengan custom loader, jadi `dlopen` biasa tidak mengenalnya.
+
+v3 karena itu:
+1. **Tidak ada lagi handler `SIGSEGV/SIGBUS` (`sigsetjmp`)**. Versi lama bisa
+   `longjmp` keluar dari tengah `malloc` saat packer mencabut halaman modul ->
+   thread mod **wedged**: trace berhenti total, status nyangkut
+   `waiting_for_il2cpp` selamanya.
+2. Semua baca memakai jalur bebas-fault: file -> `pread`, memori ->
+   `process_vm_readv` (gagal = `EFAULT`, bukan crash).
+3. Urutan sumber symbol: `dlopen(NOLOAD)+dlsym` -> **file `app_libs/liblogic.so`**
+   (nilai `st_value` + base dari `/proc/self/maps`) -> gate stub (kalau suatu saat
+   diisi) -> symbol langsung di modul memori.
+4. Hasil resolve divalidasi: `il2cpp_domain_get` harus berada di region
+   executable hasil `/proc/self/maps`; kalau tidak -> ditolak, dicoba lagi.
+5. Trace relocate: `/data/data/<pkg>/files/mcggmod_il2_<pid>.txt` dengan prefix
+   `[pid t=ms]` (per-proses, tidak tercampur). Ambil dari PC:
+   `adb shell "su -c 'cat /data/data/com.mobilechess.gp/files/mcggmod_il2_*.txt'"`
+
+Status file dipisah per-proses: proses game (`:UnityKillsMe`) menulis
+`/sdcard/mcggmod_status.txt`; proses shell/extractor (tidak punya il2cpp)
+menulis `/sdcard/mcggmod_status_shell.txt` supaya tidak saling menimpa.
+
 ## Pitfall versi PC yang sudah dihindari di kode ini
 
 | Bug PC | Akibat | Yang dipakai di sini |
