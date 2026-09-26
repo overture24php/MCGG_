@@ -11,18 +11,37 @@
 
 namespace status {
 
+// Cache nilai saat pertama kali — FindClass() memanggil API il2cpp (GC
+// safepoint) yang bisa macet kalau dipanggil dari loop kita, jadi hanya satu
+// kali lalu pakai cache.
+static bool g_cached = false;
+static bool cs_ready = false, k_shop = false, k_pd = false, k_bd = false, k_res = false;
+
+static void CacheOnce() {
+    if (g_cached) return;
+    g_cached = true;
+    cs_ready = il2::CsImage() != nullptr;
+    k_shop = il2::FindClass("", "MCLogicHeroShop") != nullptr;
+    k_pd   = il2::FindClass("", "MCChessPlayerData") != nullptr;
+    k_bd   = il2::FindClass("", "MCBattleData") != nullptr;
+    k_res  = il2::FindClass("MTTDProto", "Cmd_Battle_Result_CS") != nullptr;
+}
+
 void Update() {
     static int counter = 0;
-    if (++counter % 5 == 1) LOGI("[STATUS] update #%d", counter);
+    const bool tick = (++counter % 5 == 1);
+    if (tick) LOGI("[STATUS] update #%d", counter);
     FILE* f = std::fopen("/sdcard/mcggmod_status.txt", "w");
-    if (!f) { LOGW("[STATUS] gagal buka status file"); return; }
+    if (!f) { if (tick) LOGW("[STATUS] gagal buka status file"); return; }
+
+    CacheOnce();   // sekali saja, bukan tiap tick
 
     std::fprintf(f, "=== MCGG Mod Status ===\n");
-    std::fprintf(f, "il2cpp_ready: %s\n", il2::CsImage() ? "YES" : "NO");
-    std::fprintf(f, "MCLogicHeroShop: %s\n", il2::FindClass("", "MCLogicHeroShop") ? "FOUND" : "MISSING");
-    std::fprintf(f, "MCChessPlayerData: %s\n", il2::FindClass("", "MCChessPlayerData") ? "FOUND" : "MISSING");
-    std::fprintf(f, "MCBattleData: %s\n", il2::FindClass("", "MCBattleData") ? "FOUND" : "MISSING");
-    std::fprintf(f, "Cmd_Battle_Result_CS: %s\n", il2::FindClass("MTTDProto", "Cmd_Battle_Result_CS") ? "FOUND" : "MISSING");
+    std::fprintf(f, "il2cpp_ready: %s\n", cs_ready ? "YES" : "NO");
+    std::fprintf(f, "MCLogicHeroShop: %s\n", k_shop ? "FOUND" : "MISSING");
+    std::fprintf(f, "MCChessPlayerData: %s\n", k_pd ? "FOUND" : "MISSING");
+    std::fprintf(f, "MCBattleData: %s\n", k_bd ? "FOUND" : "MISSING");
+    std::fprintf(f, "Cmd_Battle_Result_CS: %s\n", k_res ? "FOUND" : "MISSING");
     std::fprintf(f, "\n=== Config ===\n");
     std::fprintf(f, "preclear: %d\n", cfg::t.preclear);
     std::fprintf(f, "autobuy_guin: %d\n", cfg::t.autobuy_guin);

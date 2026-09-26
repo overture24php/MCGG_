@@ -164,13 +164,20 @@ void InitAutoWin() {
     il2::Class* kRes = il2::FindClass("MTTDProto", "Cmd_Battle_Result_CS");
     LOGI("[BYPASS] ketemu=%d", (int)(kRes != nullptr));
     if (kRes) {
+        LOGI("[BYPASS] field iBattleTime ...");
         off_bt         = il2::FieldOffset(kRes, "iBattleTime");
+        LOGI("[BYPASS] field iIsInvalidBattle ...");
         off_invalid    = il2::FieldOffset(kRes, "iIsInvalidBattle");
+        LOGI("[BYPASS] field iWarmBattleHook ...");
         off_hook       = il2::FieldOffset(kRes, "iWarmBattleHook");
+        LOGI("[BYPASS] field bIsDownLoadComplated ...");
         off_downloaded = il2::FieldOffset(kRes, "bIsDownLoadComplated");
+        LOGI("[BYPASS] field vHooker ...");
         off_hooker     = il2::FieldOffset(kRes, "vHooker");
         // 2 overload visit(argc=2) -> disambiguate via nama class arg ke-0
+        LOGI("[BYPASS] MethodFindArg0 visit(SdpPacker) ...");
         il2::M v = il2::MethodFindArg0(kRes, "visit", 2, "SdpPacker");
+        LOGI("[BYPASS] MethodFindArg0 ok=%d fn=%p", (int)v.ok(), v.fn);
         if (v.ok())
             hook::Attach(v.fn, OnResultVisit, nullptr, "Cmd_Battle_Result_CS.visit(SdpPacker)");
     } else {
