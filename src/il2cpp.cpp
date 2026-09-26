@@ -635,6 +635,16 @@ Image* CsImage() { return g_cs; }
 ScopedThread::ScopedThread() {
     if (api.thread_attach && api.domain_get) t = api.thread_attach(api.domain_get());
 }
+
+bool AttachCurrent() {
+    static Thread* held = nullptr;
+    if (held) return true;
+    if (!api.thread_attach || !api.domain_get) return false;
+    Domain* dom = api.domain_get();
+    if (!dom) return false;
+    held = api.thread_attach(dom);
+    return held != nullptr;
+}
 ScopedThread::~ScopedThread() {
     if (t && api.thread_detach) api.thread_detach(t);
 }

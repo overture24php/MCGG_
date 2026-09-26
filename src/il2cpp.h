@@ -132,4 +132,9 @@ struct ScopedThread {
     ~ScopedThread();
 };
 
+// Attach thread ini ke domain SEKALI dan tahan (idempoten). Dipakai main
+// loop sebelum feat::InitAll supaya panggilan API metadata tidak deadlock
+// (GC stop-the-world) saat game masih booting. Return true kalau sudah attach.
+bool AttachCurrent();
+
 } // namespace il2

@@ -61,8 +61,14 @@ static void* MainThread(void*) {
     }
     WriteStatus("il2cpp_ready");
 
-    // 2. attach thread ini ke domain sebelum menyentuh objek managed
-    il2::ScopedThread st;
+    // 2. attach thread ini ke domain sebelum menyentuh objek managed.
+    //    TIDAK di sini: kalau attach + InitAll jalan saat game masih di
+    //    loading/login, panggilan API metadata (class_get_methods dll) bisa
+    //    masuk GC stop-the-world dan DEADLOCK (terbukti: hang di
+    //    "BYPASS ketemu=1"). Attach + InitAll dipindah ke loop utama (lihat
+    //    bawah) supaya dijalankan setelah game benar-benar jalan.
+    bool attached = false;
+    bool hooked   = false;
 
     // 3. gum
     if (!hook::Init()) {
@@ -73,15 +79,25 @@ static void* MainThread(void*) {
     // 4. toggle dari /sdcard/mcggmod.conf + watcher
     cfg::StartWatcher();
 
-    // 5. pasang semua hook
-    LOGI("[INIT] mulai feat::InitAll");
-    feat::InitAll();
-    LOGI("=== semua hook terpasang ===");
-
-    // 6. loop kecil: layani aksi sekali-pakai (autowin / skip guide) + status
-    //    (edge trigger = di cfg::Load; di sini cukup konsumsi + tulis balik 0)
+    // 5. loop kecil: attach + pasang hook (dengan retry), layani aksi
+    //    sekali-pakai, update status. Hook dipasang setelah attach berhasil
+    //    supaya tidak nabrak GC saat boot.
     int  status_tick  = 0;
+    int  attach_try   = 0;
     for (;;) {
+        // attach (idempoten; ScopedThread dipegang di variabel agar hidup
+        // selama thread) lalu pasang hook sekali.
+        if (!attached && (attach_try++ % 4 == 0)) {
+            if (il2::AttachCurrent()) {
+                attached = true;
+                LOGI("[INIT] thread attach OK, pasang hook ...");
+                feat::InitAll();
+                hooked = true;
+                LOGI("=== semua hook terpasang ===");
+            }
+        }
+        (void)hooked;
+
         if (cfg::t.autowin) {
             feat::TriggerAutoWin();
             cfg::t.autowin = false;
