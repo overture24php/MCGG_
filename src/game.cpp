@@ -289,9 +289,14 @@ static void OnFrame(void**) {
     }
     g_wasInMatch = inMatch;
 
-    feat::PreClearFrame();
-    feat::FreeBuyFrame();
-    feat::AutoStackFrame();
+    // PENTING: frame handler hanya boleh jalan DI DALAM match. Di lobby/loading
+    // objek shop/player masih null -> feat::*Frame() dereference null ->
+    // SIGSEGV di UnityMain -> game restart terus (terbukti 26-09-2026).
+    if (inMatch) {
+        feat::PreClearFrame();
+        feat::FreeBuyFrame();
+        feat::AutoStackFrame();
+    }
 
     g_inFrame = false;
 }
