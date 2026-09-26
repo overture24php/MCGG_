@@ -142,6 +142,18 @@ v3 karena itu:
    `[pid t=ms]` (per-proses, tidak tercampur). Ambil dari PC:
    `adb shell "su -c 'cat /data/data/com.mobilechess.gp/files/mcggmod_il2_*.txt'"`
 
+## ⚠️ PENTING: game restart-loop (fix 26-09-2026, commit `7e2bd9b`)
+
+Gejala: game selesai loading lalu **restart terus** (tidak masuk lobby/tutorial).
+Penyebab: hook frame `UnityEngine.Time.get_deltaTime` memanggil
+`feat::PreClearFrame/FreeBuyFrame/AutoStackFrame` **setiap frame, tanpa cek
+match**. Di lobby/loading objek shop/player masih `nullptr` → dereference null →
+`SIGSEGV` di thread `UnityMain` → game restart.
+
+Fix: frame handler hanya jalan kalau `InMatch()` true (di `game.cpp OnFrame`).
+Aturan umum untuk hook apa pun di game ini: **semua callback harus null-safe
+dan gated**, karena game memanggil hook kapan saja — bukan hanya saat match.
+
 ## Status file
 
 `/sdcard/mcggmod_status.txt` ditulis tiap ~1 detik oleh `status::Update()`
